@@ -1,0 +1,19 @@
+# Las fotos de evidencia se suben desde el POS. Aunque hoy siempre se guardan
+# como .jpg, esta carpeta nunca debe ejecutar código: si algún día se cuela un
+# archivo con extensión PHP, aquí se sirve como texto y no se ejecuta.
+<IfModule mod_php.c>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php7.c>
+    php_flag engine off
+</IfModule>
+
+<FilesMatch "\.(php|phtml|phar|phps|cgi|pl)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
