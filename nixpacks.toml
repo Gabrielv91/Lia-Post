@@ -1,8 +1,4 @@
 [phases.build]
 cmds = [
-    "sed -i 's/http {/http { client_max_body_size 50M;/g' /assets/nginx.template.conf",
-    "echo 'upload_max_filesize = 50M' >> /opt/nixpacks/php.ini",
-    "echo 'post_max_size = 50M' >> /opt/nixpacks/php.ini",
-    "echo 'memory_limit = 256M' >> /opt/nixpacks/php.ini",
-    "echo 'max_execution_time = 120' >> /opt/nixpacks/php.ini"
+    "sed -i 's/http {/http { client_max_body_size 50M;/g' /assets/nginx.template.conf"
 ]
