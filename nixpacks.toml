@@ -1,5 +1,4 @@
-[phases.setup]
-nixPkgs = ['...', 'nginx']
-
 [phases.build]
-cmds = ['echo "client_max_body_size 20M;" > /etc/nginx/conf.d/uploads.conf']
+cmds = [
+    "sed -i 's/http {/http { client_max_body_size 50M;/g' /assets/nginx.template.conf"
+]
