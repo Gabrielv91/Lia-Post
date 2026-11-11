@@ -40,31 +40,35 @@ if ($check_ha && $check_ha->num_rows == 0) {
 
 $id_negocio = $_SESSION['id_negocio']; // <- INYECCIÓN MULTI-TENANT
 $usuario_id = $_SESSION['usuario_id'];
-$cliente_cedula = trim($datos['clienteCedula']);
-$cliente_nombre = trim($datos['clienteNombre']);
-$tasa = floatval($datos['tasa']);
-$total_usd = floatval($datos['totalUsd']);
-$total_bs = floatval($datos['totalBs']);
-$metodo_pago = $datos['metodoPago']; 
-$abono_usd = floatval($datos['abonoUsd']); 
-$deuda_usd = floatval($datos['deudaUsd']); 
+$cliente_cedula = trim($datos['clienteCedula'] ?? '');
+$cliente_nombre = trim($datos['clienteNombre'] ?? '');
+$tasa = !empty($datos['tasa']) ? floatval($datos['tasa']) : 0;
+$total_usd = !empty($datos['totalUsd']) ? floatval($datos['totalUsd']) : 0;
+$total_bs = !empty($datos['totalBs']) ? floatval($datos['totalBs']) : 0;
+$metodo_pago = trim($datos['metodoPago'] ?? ''); 
+$abono_usd = !empty($datos['abonoUsd']) ? floatval($datos['abonoUsd']) : 0; 
+$deuda_usd = !empty($datos['deudaUsd']) ? floatval($datos['deudaUsd']) : 0; 
 $referencia_final = trim($datos['referencia'] ?? ''); 
 $observaciones = trim($datos['observaciones'] ?? '');
 $foto_base64 = $datos['foto_base64'] ?? '';
 
-$m_usd = isset($datos['mixtoUsd']) ? floatval($datos['mixtoUsd']) : 0;
-$m_efBs = isset($datos['mixtoEfecBs']) ? floatval($datos['mixtoEfecBs']) : 0;
-$m_pmBs = isset($datos['mixtoPmBs']) ? floatval($datos['mixtoPmBs']) : 0;
-$m_pvBs = isset($datos['mixtoPvBs']) ? floatval($datos['mixtoPvBs']) : 0;
-$m_bpBs = isset($datos['mixtoBpBs']) ? floatval($datos['mixtoBpBs']) : 0;
-$m_otroUsd = isset($datos['mixtoOtroUsd']) ? floatval($datos['mixtoOtroUsd']) : 0;
-$m_otroDetalle = isset($datos['mixtoOtroDetalle']) ? trim($datos['mixtoOtroDetalle']) : '';
+// CORRECCIONES ESTRICTAS: Asignación de 0 a campos vacíos
+$m_usd = !empty($datos['mixtoUsd']) ? floatval($datos['mixtoUsd']) : 0;
+$m_efBs = !empty($datos['mixtoEfecBs']) ? floatval($datos['mixtoEfecBs']) : 0;
+$m_pmBs = !empty($datos['mixtoPmBs']) ? floatval($datos['mixtoPmBs']) : 0;
+$m_pvBs = !empty($datos['mixtoPvBs']) ? floatval($datos['mixtoPvBs']) : 0;
+$m_bpBs = !empty($datos['mixtoBpBs']) ? floatval($datos['mixtoBpBs']) : 0;
+$m_otroUsd = !empty($datos['mixtoOtroUsd']) ? floatval($datos['mixtoOtroUsd']) : 0;
+$m_otroDetalle = !empty($datos['mixtoOtroDetalle']) ? trim($datos['mixtoOtroDetalle']) : '';
 
-$billete_recibido = isset($datos['billeteRecibidoUsd']) ? floatval($datos['billeteRecibidoUsd']) : $total_usd;
-$vuelto_entregado_usd = isset($datos['vueltoDadoUsd']) ? floatval($datos['vueltoDadoUsd']) : 0;
-$vuelto_entregado_bs = isset($datos['vueltoDadoBs']) ? floatval($datos['vueltoDadoBs']) : 0;
-$moneda_vuelto = isset($datos['metodoVueltoBs']) ? trim($datos['metodoVueltoBs']) : NULL;
-$abono_a_cliente = isset($datos['abonoAClienteUsd']) ? floatval($datos['abonoAClienteUsd']) : 0;
+$billete_recibido = !empty($datos['billeteRecibidoUsd']) ? floatval($datos['billeteRecibidoUsd']) : $total_usd;
+$vuelto_entregado_usd = !empty($datos['vueltoDadoUsd']) ? floatval($datos['vueltoDadoUsd']) : 0;
+$vuelto_entregado_bs = !empty($datos['vueltoDadoBs']) ? floatval($datos['vueltoDadoBs']) : 0;
+
+// CORRECCIÓN CRÍTICA: Asigna NULL si metodo_vuelto viene vacío
+$moneda_vuelto = (!empty($datos['metodoVueltoBs']) && trim($datos['metodoVueltoBs']) !== '') ? trim($datos['metodoVueltoBs']) : NULL;
+
+$abono_a_cliente = !empty($datos['abonoAClienteUsd']) ? floatval($datos['abonoAClienteUsd']) : 0;
 
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
