@@ -63,7 +63,7 @@ $m_otroDetalle = isset($datos['mixtoOtroDetalle']) ? trim($datos['mixtoOtroDetal
 $billete_recibido = isset($datos['billeteRecibidoUsd']) ? floatval($datos['billeteRecibidoUsd']) : $total_usd;
 $vuelto_entregado_usd = isset($datos['vueltoDadoUsd']) ? floatval($datos['vueltoDadoUsd']) : 0;
 $vuelto_entregado_bs = isset($datos['vueltoDadoBs']) ? floatval($datos['vueltoDadoBs']) : 0;
-$moneda_vuelto = isset($datos['metodoVueltoBs']) ? trim($datos['metodoVueltoBs']) : '';
+$moneda_vuelto = isset($datos['metodoVueltoBs']) ? trim($datos['metodoVueltoBs']) : NULL;
 $abono_a_cliente = isset($datos['abonoAClienteUsd']) ? floatval($datos['abonoAClienteUsd']) : 0;
 
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
