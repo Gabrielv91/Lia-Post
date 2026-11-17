@@ -11,20 +11,43 @@ $mensaje = '';
 $id_negocio = $_SESSION['id_negocio']; // <- VARIABLE MULTI-TENANT
 
 // =========================================================================
+// NUEVO: OBTENER SUFIJO ÚNICO DEL NEGOCIO PARA LOS LOGINS
+// =========================================================================
+$stmt_neg = $conexion->prepare("SELECT nombre FROM negocios WHERE id = ?");
+$stmt_neg->bind_param("i", $id_negocio);
+$stmt_neg->execute();
+$res_neg = $stmt_neg->get_result();
+$sufijo_negocio = "empresa"; // Valor por defecto de seguridad
+
+if ($fila_neg = $res_neg->fetch_assoc()) {
+    // Limpiamos el nombre: minúsculas y solo letras/números
+    $nombre_limpio = strtolower(trim($fila_neg['nombre']));
+    $nombre_limpio = preg_replace('/[^a-z0-9]/', '', $nombre_limpio);
+    // Tomamos los primeros 8 caracteres
+    $sufijo_negocio = substr($nombre_limpio, 0, 8); 
+}
+$stmt_neg->close();
+
+// =========================================================================
 // 2. PROCESAR NUEVO USUARIO
 // =========================================================================
 if (isset($_POST['crear_usuario'])) {
     $nombre = $conexion->real_escape_string($_POST['nombre']);
-    $usuario = $conexion->real_escape_string($_POST['usuario']);
+    
+    // CORRECCIÓN: Primero pasamos a minúscula, luego filtramos caracteres
+    $usuario_limpio = strtolower(trim($_POST['usuario']));
+    $usuario_input = preg_replace('/[^a-z0-9_]/', '', $usuario_limpio);
+    $usuario = $usuario_input . '_' . $sufijo_negocio;
+    
     $clave = $conexion->real_escape_string($_POST['clave']);
     $rol = $conexion->real_escape_string($_POST['rol']);
 
     $check = $conexion->query("SELECT id FROM usuarios WHERE usuario = '$usuario' AND id_negocio = $id_negocio");
     if ($check && $check->num_rows > 0) {
-        $mensaje = "❌ Error: El nombre de usuario '$usuario' ya existe. Elige otro.";
+        $mensaje = "❌ Error: El nombre de usuario '$usuario' ya existe en tu empresa. Elige otro.";
     } else {
         $conexion->query("INSERT INTO usuarios (id_negocio, nombre, usuario, clave, rol) VALUES ($id_negocio, '$nombre', '$usuario', '$clave', '$rol')");
-        $mensaje = "✅ Usuario '$nombre' creado exitosamente como $rol.";
+        $mensaje = "✅ Usuario '$nombre' creado exitosamente. (Login: $usuario)";
     }
 }
 
@@ -45,12 +68,18 @@ if (isset($_POST['cambiar_clave'])) {
 if (isset($_POST['editar_usuario'])) {
     $id_usuario = intval($_POST['id_usuario']);
     $nombre = $conexion->real_escape_string($_POST['nombre']);
-    $usuario = $conexion->real_escape_string($_POST['usuario']);
+    
+    // CORRECCIÓN: Filtro inteligente con el orden correcto
+    $usuario_limpio = strtolower(trim($_POST['usuario']));
+    $usuario_input = preg_replace('/[^a-z0-9_]/', '', $usuario_limpio);
+    $usuario_input = str_replace('_' . $sufijo_negocio, '', $usuario_input); 
+    $usuario = $usuario_input . '_' . $sufijo_negocio;
+    
     $rol = $conexion->real_escape_string($_POST['rol']);
 
     $check = $conexion->query("SELECT id FROM usuarios WHERE usuario = '$usuario' AND id != $id_usuario AND id_negocio = $id_negocio");
     if ($check && $check->num_rows > 0) {
-        $mensaje = "❌ Error: El usuario '$usuario' ya está en uso por otra persona.";
+        $mensaje = "❌ Error: El usuario '$usuario' ya está en uso por otra persona en tu empresa.";
     } else {
         $conexion->query("UPDATE usuarios SET nombre = '$nombre', usuario = '$usuario', rol = '$rol' WHERE id = $id_usuario AND id_negocio = $id_negocio");
         $mensaje = "✏️ Datos del usuario actualizados.";
@@ -182,7 +211,8 @@ $lista_usuarios = $conexion->query($query_usuarios);
                 </div>
                 <div style="margin-bottom: 1rem;">
                     <label style="font-size: 0.85rem; font-weight: bold;">Nombre de Usuario (Para iniciar sesión)</label>
-                    <input type="text" name="usuario" required class="input-cliente" style="width: 100%; box-sizing: border-box; padding: 0.7rem;" placeholder="Ej: maria_perez">
+                    <input type="text" name="usuario" required class="input-cliente" style="width: 100%; box-sizing: border-box; padding: 0.7rem;" placeholder="Ej: maria">
+                    <small style="color: #64748b; font-size: 0.75rem;">El sistema agregará automáticamente el nombre de tu empresa al final.</small>
                 </div>
                 <div style="margin-bottom: 1rem;">
                     <label style="font-size: 0.85rem; font-weight: bold;">Contraseña</label>

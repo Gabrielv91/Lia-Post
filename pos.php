@@ -17,17 +17,21 @@ if ($check_img_col && $check_img_col->num_rows == 0) {
     $conexion->query("ALTER TABLE productos ADD imagen VARCHAR(255) NULL");
 }
 
-// 3. Consultar las tasas del día (TABLA GLOBAL)
-$query_tasa = "SELECT tasa_dia, tasa_euro FROM configuracion ORDER BY id DESC LIMIT 1";
-$resultado_tasa = $conexion->query($query_tasa);
-$tasa = 36.50; 
-$tasa_euro = 1.08; 
+// 3. Consultar las tasas del día (AISLADO POR NEGOCIO)
+$tasa = 1000.00; // Valor por defecto
+$tasa_euro = 1.08; // Valor por defecto
 
-if ($resultado_tasa && $resultado_tasa->num_rows > 0) {
-    $fila = $resultado_tasa->fetch_assoc();
-    $tasa = floatval($fila['tasa_dia']);
-    $tasa_euro = isset($fila['tasa_euro']) ? floatval($fila['tasa_euro']) : 1.08;
+$stmt_tasa = $conexion->prepare("SELECT tasa_dia, tasa_euro FROM negocios WHERE id = ?");
+$stmt_tasa->bind_param("i", $id_negocio);
+$stmt_tasa->execute();
+$res_tasa = $stmt_tasa->get_result();
+
+if ($res_tasa && $res_tasa->num_rows > 0) {
+    $fila_tasa = $res_tasa->fetch_assoc();
+    $tasa = floatval($fila_tasa['tasa_dia']);
+    $tasa_euro = isset($fila_tasa['tasa_euro']) ? floatval($fila_tasa['tasa_euro']) : 1.08;
 }
+$stmt_tasa->close();
 
 // 4. Consultar todos los productos (AISLADO POR NEGOCIO)
 $query_productos = "SELECT id, nombre, codigo_barras, precio_usd, precio_mayor_bcv, precio_efectivo_detal, precio_efectivo_mayor, tipo_unidad, stock, imagen FROM productos WHERE id_negocio = $id_negocio";
@@ -181,7 +185,7 @@ $resultado_productos = $conexion->query($query_productos);
             <div class="tasa-indicador" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
                 <span>Tasa Dólar: <strong id="tasa-actual" style="color: #10b981;"><?php echo number_format($tasa, 2, '.', ''); ?> Bs</strong></span>
                 <span style="color: #64748b; margin-left: 5px;">| Euro: <strong id="tasa-euro-actual">$<?php echo number_format($tasa_euro, 2, '.', ''); ?></strong></span>
-                <?php if($_SESSION['usuario_rol'] == 'superadmin'): ?>
+                <?php if($_SESSION['usuario_rol'] == 'admin' || $_SESSION['usuario_rol'] == 'superadmin'): ?>
                     <button onclick="cambiarTasaManual()" style="background: none; border: none; cursor: pointer; font-size: 1.2rem; margin-left: 5px;" title="Actualizar Tasas">✏️</button>
                 <?php endif; ?>
             </div>
