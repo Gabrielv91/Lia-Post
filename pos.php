@@ -124,19 +124,98 @@ $resultado_productos = $conexion->query($query_productos);
             border-color: #059669;
         }
 
+        /* ========================================================= */
+        /* TARJETAS COMPACTAS PARA QUE QUEPAN MÁS PRODUCTOS          */
+        /* ========================================================= */
+        .cuadricula-productos {
+            display: grid !important;
+            grid-template-columns: repeat(auto-fill, minmax(135px, 1fr)) !important;
+            gap: 0.55rem !important;
+        }
+        .tarjeta-producto {
+            padding: 0.5rem !important;
+            border-radius: 8px !important;
+            box-sizing: border-box !important;
+        }
+        .tarjeta-producto h3 {
+            font-size: 0.8rem !important;
+            line-height: 1.15 !important;
+            margin: 0 0 0.2rem 0 !important;
+            min-height: 1.9rem;
+            overflow: hidden;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+        }
+        .tarjeta-producto h3 small {
+            font-size: 0.68rem !important;
+            font-weight: normal !important;
+            display: block;
+            margin-top: 1px;
+        }
+        .tarjeta-producto .precio {
+            font-size: 0.78rem !important;
+            margin: 0 !important;
+            line-height: 1.2 !important;
+        }
+        .tarjeta-producto .precio-bs {
+            font-size: 0.82rem !important;
+            margin: 1px 0 3px 0 !important;
+            line-height: 1.2 !important;
+        }
+        .tarjeta-producto .stock-info {
+            font-size: 0.72rem !important;
+            color: #f59e0b;
+            margin: 0 0 0.35rem 0 !important;
+            line-height: 1.1 !important;
+        }
+        .img-producto-pos {
+            width: 100%;
+            height: 62px;
+            object-fit: cover;
+            border-radius: 5px;
+            margin-bottom: 0.35rem;
+            border: 1px solid #e2e8f0;
+            background: #f8fafc;
+        }
+        .placeholder-producto-pos {
+            width: 100%;
+            height: 62px;
+            border-radius: 5px;
+            margin-bottom: 0.35rem;
+            background: #f1f5f9;
+            border: 1px dashed #cbd5e1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            color: #94a3b8;
+        }
+        .control-clasico input {
+            padding: 0.25rem 0.35rem !important;
+            font-size: 0.85rem !important;
+            min-width: 0;
+            width: 45%;
+        }
+        .control-clasico .btn-agregar {
+            padding: 0.3rem 0.45rem !important;
+            font-size: 0.8rem !important;
+            flex: 1;
+        }
+
         .control-rapido {
             display: none;
             align-items: center;
             justify-content: space-between;
-            gap: 4px;
+            gap: 3px;
             width: 100%;
         }
         .btn-stepper {
-            width: 36px;
-            height: 36px;
+            width: 28px;
+            height: 28px;
             border: none;
-            border-radius: 6px;
-            font-size: 1.2rem;
+            border-radius: 5px;
+            font-size: 1rem;
             font-weight: bold;
             cursor: pointer;
             color: white;
@@ -151,13 +230,15 @@ $resultado_productos = $conexion->query($query_productos);
         .btn-stepper-mas:active { background: #059669; }
         .input-rapido {
             width: 100%;
-            min-width: 40px;
+            min-width: 30px;
+            height: 28px;
+            box-sizing: border-box;
             text-align: center;
             font-weight: bold;
-            font-size: 1rem;
-            padding: 0.35rem;
+            font-size: 0.88rem;
+            padding: 0.15rem;
             border: 1px solid #cbd5e1;
-            border-radius: 6px;
+            border-radius: 5px;
             background: #f8fafc;
             color: #1e3a8a;
         }
@@ -180,29 +261,6 @@ $resultado_productos = $conexion->query($query_productos);
             width: 100%;
             max-width: 380px;
             box-shadow: 0 15px 30px rgba(0,0,0,0.25);
-        }
-
-        .img-producto-pos {
-            width: 100%;
-            height: 110px;
-            object-fit: cover;
-            border-radius: 6px;
-            margin-bottom: 0.5rem;
-            border: 1px solid #e2e8f0;
-            background: #f8fafc;
-        }
-        .placeholder-producto-pos {
-            width: 100%;
-            height: 110px;
-            border-radius: 6px;
-            margin-bottom: 0.5rem;
-            background: #f1f5f9;
-            border: 1px dashed #cbd5e1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 2.2rem;
-            color: #94a3b8;
         }
 
         .tabs-container { 
@@ -290,12 +348,10 @@ $resultado_productos = $conexion->query($query_productos);
             .contenedor-principal { display: flex; flex-direction: column; padding: 0.5rem; gap: 1.5rem; }
             .panel-productos, .panel-factura { width: 100% !important; box-sizing: border-box; margin: 0; background: transparent; padding: 0; box-shadow: none; border: none; }
             .tab-content { padding: 1rem; border: 2px solid #1e293b; border-radius: 0 0 8px 8px; }
-            .cuadricula-productos { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.8rem; }
-            .tarjeta-producto { padding: 0.8rem; }
-            .tarjeta-producto h3 { font-size: 0.95rem; }
-            .accion-rapida { display: flex; flex-direction: column; gap: 0.5rem; }
-            .control-clasico { display: flex; flex-direction: column; gap: 0.5rem; width: 100%; }
-            .control-clasico input, .control-clasico button { width: 100%; box-sizing: border-box; margin: 0; font-size: 16px; }
+            .cuadricula-productos { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)) !important; gap: 0.45rem !important; }
+            .accion-rapida { display: flex; flex-direction: column; gap: 0.35rem; }
+            .control-clasico { display: flex; flex-direction: column; gap: 0.35rem; width: 100%; }
+            .control-clasico input, .control-clasico button { width: 100%; box-sizing: border-box; margin: 0; font-size: 14px; }
             .cuadricula-pagos { grid-template-columns: repeat(2, 1fr); gap: 0.5rem; }
             .opciones-pago, .totales { padding: 1rem 0; }
         }
@@ -370,21 +426,21 @@ $resultado_productos = $conexion->query($query_productos);
                                 <div class="placeholder-producto-pos">📦</div>
                             <?php endif; ?>
 
-                            <h3><?php echo $nombre; ?> <small style="color: #64748b; font-size: 0.8rem;">(<?php echo $codigo; ?>)</small></h3>
+                            <h3 title="<?php echo $nombre; ?>"><?php echo $nombre; ?> <small style="color: #64748b;">(<?php echo $codigo; ?>)</small></h3>
                             <p class="precio" id="render-precio-usd-<?php echo $id; ?>">$<?php echo number_format($p_bcv_detal, 2); ?> / <?php echo $unidad_texto; ?></p>
                             <p class="precio-bs" id="render-precio-bs-<?php echo $id; ?>" style="font-weight: bold; color: #10b981;">
                                 <?php echo number_format($precio_bs_defecto, 2, ',', '.'); ?> Bs
                             </p>
                             
-                            <p style="font-size: 0.85rem; color: #f59e0b; margin-top: -5px; margin-bottom: 5px;">
+                            <p class="stock-info">
                                 📦 Disp: <strong><?php echo $stock_mostrar; ?></strong> <?php echo $unidad_texto; ?>
                             </p>
                             
                             <div class="accion-rapida">
                                 <!-- Modo Clásico (por defecto) -->
-                                <div class="control-clasico" style="display: flex; gap: 0.4rem; width: 100%;">
+                                <div class="control-clasico" style="display: flex; gap: 0.3rem; width: 100%;">
                                     <?php if ($tipo_unidad == 'kg'): ?>
-                                        <input type="number" step="0.001" min="0.001" max="<?php echo $stock; ?>" placeholder="Ej: 0.400" class="input-cantidad" name="cantidad_<?php echo $id; ?>">
+                                        <input type="number" step="0.001" min="0.001" max="<?php echo $stock; ?>" placeholder="0.400" class="input-cantidad" name="cantidad_<?php echo $id; ?>">
                                     <?php else: ?>
                                         <input type="number" step="1" min="1" max="<?php echo $stock; ?>" value="1" class="input-cantidad" name="cantidad_<?php echo $id; ?>">
                                     <?php endif; ?>
@@ -715,7 +771,6 @@ $resultado_productos = $conexion->query($query_productos);
         let mostrarTodosActivo = localStorage.getItem(KEY_MOSTRAR_TODOS) === 'true';
         let modoRapidoActivo   = localStorage.getItem(KEY_MODO_RAPIDO) === 'true';
 
-        // Capturar y restaurar scroll para evitar que la lista salte hacia arriba
         function capturarScrollPos() {
             const panel = document.querySelector('.panel-productos');
             const grid  = document.querySelector('.cuadricula-productos');
@@ -823,7 +878,6 @@ $resultado_productos = $conexion->query($query_productos);
             let cant = parseFloat(nuevaCantidad);
             if (isNaN(cant) || cant < 0) cant = 0;
 
-            // Validar que no supere el inventario disponible
             if (cant > stockDisp) {
                 alert(`⚠️ Stock insuficiente. Solo hay ${stockDisp} disponible(s) en inventario.`);
                 cant = stockDisp;
@@ -847,7 +901,6 @@ $resultado_productos = $conexion->query($query_productos);
                 const precioUnit = parseFloat(tarjeta.getAttribute('data-precio')) || 0;
                 if (item.subtotal !== undefined) item.subtotal = precioUnit * cant;
             } else {
-                // Aprovechamos el botón clásico oculto para que main.js cree el objeto con su formato exacto
                 const inputClasico = tarjeta.querySelector('.input-cantidad');
                 const btnClasico = tarjeta.querySelector('.btn-agregar');
                 if (inputClasico && btnClasico) {
@@ -857,7 +910,6 @@ $resultado_productos = $conexion->query($query_productos);
                 }
             }
 
-            // Mantener visibles las tarjetas y fijar el scroll de inmediato
             aplicarPreferenciaMostrar();
             if (typeof window.actualizarTotalesCarrito === 'function') window.actualizarTotalesCarrito();
             if (typeof window.actualizarTicket === 'function') window.actualizarTicket();
@@ -963,7 +1015,6 @@ $resultado_productos = $conexion->query($query_productos);
             });
         }
 
-        // Eventos iniciales y observadores
         document.addEventListener('DOMContentLoaded', () => {
             const sugBox = document.getElementById('sugerencias-clientes');
             const inpBusqCli = document.getElementById('buscador-cliente-pos');
@@ -986,7 +1037,6 @@ $resultado_productos = $conexion->query($query_productos);
                 obsCli.observe(sugBox, { childList: true, subtree: true });
             }
 
-            // Re-aplicar "Ver Todos" cuando se borra el texto del buscador de productos
             const buscadorProd = document.getElementById('buscar-producto');
             if (buscadorProd) {
                 buscadorProd.addEventListener('input', () => {
@@ -994,7 +1044,6 @@ $resultado_productos = $conexion->query($query_productos);
                 });
             }
 
-            // Mantener los productos visibles y fijos en su posición tras hacer clic en "Añadir"
             document.querySelectorAll('.btn-agregar').forEach(btn => {
                 btn.addEventListener('click', () => {
                     const scrollGuardado = capturarScrollPos();
@@ -1006,7 +1055,6 @@ $resultado_productos = $conexion->query($query_productos);
                 });
             });
 
-            // Sincronizar contadores +/- si se modifica el ticket desde la lista
             const listaTicket = document.getElementById('lista-ticket');
             if (listaTicket) {
                 const obsTicket = new MutationObserver(() => {

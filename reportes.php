@@ -1,16 +1,17 @@
 <?php
 session_start();
 
-if (!isset($_SESSION['usuario_id']) || $_SESSION['usuario_rol'] != 'admin' || !isset($_SESSION['id_negocio'])) {
+if (!isset($_SESSION['usuario_id']) || !in_array($_SESSION['usuario_rol'], ['admin', 'vendedor', 'superadmin']) || !isset($_SESSION['id_negocio'])) {
     header("Location: menu.php");
     exit;
 }
 
 require_once 'conexion.php';
-$id_negocio = $_SESSION['id_negocio']; // <- VARIABLE MULTI-TENANT
+$id_negocio = intval($_SESSION['id_negocio']); // <- VARIABLE MULTI-TENANT
+$es_admin = ($_SESSION['usuario_rol'] == 'admin' || $_SESSION['usuario_rol'] == 'superadmin');
 
 // ==========================================
-// 1. AUTO-CREACIÓN DE TABLA PARA FONDOS DE CAJA
+// 1. AUTO-ACTUALIZACIÓN DE TABLAS (INGRESOS, GASTOS Y CATÁLOGO DE CONCEPTOS)
 // ==========================================
 $check_ingresos = $conexion->query("SHOW TABLES LIKE 'ingresos_caja'");
 if ($check_ingresos && $check_ingresos->num_rows == 0) {
@@ -25,47 +26,185 @@ if ($check_ingresos && $check_ingresos->num_rows == 0) {
     )");
 }
 
+$check_cat = $conexion->query("SHOW COLUMNS FROM gastos LIKE 'categoria'");
+if ($check_cat && $check_cat->num_rows == 0) {
+    $conexion->query("ALTER TABLE gastos ADD categoria VARCHAR(100) NOT NULL DEFAULT 'General' AFTER id_negocio");
+}
+
+$check_subcat = $conexion->query("SHOW COLUMNS FROM gastos LIKE 'subcategoria'");
+if ($check_subcat && $check_subcat->num_rows == 0) {
+    $conexion->query("ALTER TABLE gastos ADD subcategoria VARCHAR(100) NULL AFTER categoria");
+}
+
+$check_tipos = $conexion->query("SHOW TABLES LIKE 'tipos_gastos'");
+if ($check_tipos && $check_tipos->num_rows == 0) {
+    $conexion->query("CREATE TABLE tipos_gastos (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        id_negocio INT NOT NULL,
+        categoria VARCHAR(100) NOT NULL,
+        nombre VARCHAR(100) NOT NULL,
+        UNIQUE KEY uniq_neg_cat_nom (id_negocio, categoria, nombre)
+    )");
+    // Poblar con gastos ya existentes en la BD
+    $conexion->query("INSERT IGNORE INTO tipos_gastos (id_negocio, categoria, nombre)
+                      SELECT DISTINCT id_negocio, IFNULL(NULLIF(TRIM(categoria), ''), 'General'), TRIM(subcategoria)
+                      FROM gastos WHERE subcategoria IS NOT NULL AND TRIM(subcategoria) != ''");
+}
+
 // ==========================================
-// 2. PROCESAR NUEVO FONDO DE CAJA (POST)
+// 1.5 ELIMINAR CONCEPTO DE LA LISTA (GET - SOLO ADMIN)
+// ==========================================
+if (isset($_GET['eliminar_tipo_gasto'])) {
+    if ($es_admin) {
+        $id_tipo_del = intval($_GET['eliminar_tipo_gasto']);
+        if ($id_tipo_del > 0) {
+            $stmt_del_tipo = $conexion->prepare("DELETE FROM tipos_gastos WHERE id = ? AND id_negocio = ?");
+            $stmt_del_tipo->bind_param("ii", $id_tipo_del, $id_negocio);
+            $stmt_del_tipo->execute();
+            $stmt_del_tipo->close();
+        }
+    }
+    header("Location: " . $_SERVER['PHP_SELF'] . "?conceptos=1");
+    exit;
+}
+
+// ==========================================
+// 2. PROCESAR NUEVO GASTO (POST)
+// ==========================================
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['nuevo_gasto'])) {
+    $categoria = trim($_POST['categoria'] ?? 'General');
+    if ($categoria === '__nueva__') {
+        $categoria = trim($_POST['categoria_nueva'] ?? 'General');
+    }
+    if ($categoria === '') $categoria = 'General';
+
+    $subcategoria = trim($_POST['subcategoria_select'] ?? '');
+    if ($subcategoria === '__nuevo__' || $subcategoria === '') {
+        $subcategoria = trim($_POST['subcategoria_nueva'] ?? '');
+    }
+
+    $nota = trim($_POST['descripcion'] ?? '');
+    $metodo = trim($_POST['metodo_pago'] ?? 'efectivo_usd');
+    $monto = floatval($_POST['monto'] ?? 0);
+    $user_id = intval($_SESSION['usuario_id']);
+
+    $desc_final = ($nota !== '') ? $nota : ($subcategoria !== '' ? $subcategoria : $categoria);
+    if ($subcategoria === '') $subcategoria = $desc_final;
+
+    if ($monto > 0) {
+        // Guardar concepto en el catálogo para futuras selecciones
+        $stmt_cat = $conexion->prepare("INSERT IGNORE INTO tipos_gastos (id_negocio, categoria, nombre) VALUES (?, ?, ?)");
+        $stmt_cat->bind_param("iss", $id_negocio, $categoria, $subcategoria);
+        $stmt_cat->execute();
+        $stmt_cat->close();
+
+        // Guardar gasto
+        $stmt = $conexion->prepare("INSERT INTO gastos (id_negocio, categoria, subcategoria, descripcion, monto, metodo_pago, usuario_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
+        $stmt->bind_param("isssdsi", $id_negocio, $categoria, $subcategoria, $desc_final, $monto, $metodo, $user_id);
+        $stmt->execute();
+        $stmt->close();
+    }
+    header("Location: " . $_SERVER['PHP_SELF'] . "?gasto=ok");
+    exit;
+}
+
+// ==========================================
+// 3. PROCESAR EDITAR GASTO (POST - SOLO ADMIN)
+// ==========================================
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['editar_gasto_local'])) {
+    if ($es_admin) {
+        $gasto_id = intval($_POST['gasto_id']);
+        $categoria = trim($_POST['categoria'] ?? 'General');
+        if ($categoria === '__nueva__') {
+            $categoria = trim($_POST['categoria_nueva'] ?? 'General');
+        }
+        if ($categoria === '') $categoria = 'General';
+
+        $subcategoria = trim($_POST['subcategoria_select'] ?? '');
+        if ($subcategoria === '__nuevo__' || $subcategoria === '') {
+            $subcategoria = trim($_POST['subcategoria_nueva'] ?? '');
+        }
+
+        $desc = trim($_POST['descripcion'] ?? '');
+        $metodo = trim($_POST['metodo_pago'] ?? 'efectivo_usd');
+        $monto = floatval($_POST['monto'] ?? 0);
+
+        if ($subcategoria === '') $subcategoria = $desc;
+        if ($desc === '') $desc = $subcategoria;
+
+        if ($gasto_id > 0 && $monto > 0) {
+            $stmt_cat = $conexion->prepare("INSERT IGNORE INTO tipos_gastos (id_negocio, categoria, nombre) VALUES (?, ?, ?)");
+            $stmt_cat->bind_param("iss", $id_negocio, $categoria, $subcategoria);
+            $stmt_cat->execute();
+            $stmt_cat->close();
+
+            $stmt = $conexion->prepare("UPDATE gastos SET categoria = ?, subcategoria = ?, descripcion = ?, metodo_pago = ?, monto = ? WHERE id = ? AND id_negocio = ?");
+            $stmt->bind_param("ssssdii", $categoria, $subcategoria, $desc, $metodo, $monto, $gasto_id, $id_negocio);
+            $stmt->execute();
+            $stmt->close();
+        }
+    }
+    header("Location: " . $_SERVER['PHP_SELF']);
+    exit;
+}
+
+// ==========================================
+// 4. PROCESAR ELIMINAR GASTO (GET - SOLO ADMIN)
+// ==========================================
+if (isset($_GET['eliminar_gasto'])) {
+    if ($es_admin) {
+        $id_del = intval($_GET['eliminar_gasto']);
+        $conexion->query("DELETE FROM gastos WHERE id = $id_del AND id_negocio = $id_negocio");
+    }
+    header("Location: " . $_SERVER['PHP_SELF']);
+    exit;
+}
+
+// ==========================================
+// 5. PROCESAR NUEVO FONDO DE CAJA (POST)
 // ==========================================
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['nuevo_ingreso'])) {
     $desc = $conexion->real_escape_string($_POST['descripcion']);
     $metodo = $conexion->real_escape_string($_POST['metodo_pago']);
     $monto = floatval($_POST['monto']);
-    $user_id = $_SESSION['usuario_id'];
+    $user_id = intval($_SESSION['usuario_id']);
     $conexion->query("INSERT INTO ingresos_caja (id_negocio, usuario_id, descripcion, metodo_pago, monto) VALUES ($id_negocio, $user_id, '$desc', '$metodo', $monto)");
     header("Location: " . $_SERVER['PHP_SELF']);
     exit;
 }
 
 // ==========================================
-// 3. PROCESAR ELIMINAR FONDO DE CAJA (GET)
+// 6. PROCESAR ELIMINAR FONDO DE CAJA (GET - SOLO ADMIN)
 // ==========================================
 if (isset($_GET['eliminar_ingreso'])) {
-    $id_del = intval($_GET['eliminar_ingreso']);
-    $conexion->query("DELETE FROM ingresos_caja WHERE id = $id_del AND id_negocio = $id_negocio");
+    if ($es_admin) {
+        $id_del = intval($_GET['eliminar_ingreso']);
+        $conexion->query("DELETE FROM ingresos_caja WHERE id = $id_del AND id_negocio = $id_negocio");
+    }
     header("Location: " . $_SERVER['PHP_SELF']);
     exit;
 }
 
 // ==========================================
-// 4. PROCESAR ELIMINAR/REVERSAR ABONO (GET)
+// 7. PROCESAR ELIMINAR/REVERSAR ABONO (GET - SOLO ADMIN)
 // ==========================================
 if (isset($_GET['eliminar_abono'])) {
-    $ids_abonos = $conexion->real_escape_string($_GET['eliminar_abono']);
-    $array_ids = explode(',', $ids_abonos);
-    
-    foreach ($array_ids as $id_abono) {
-        $id_abono = intval($id_abono);
-        if ($id_abono > 0) {
-            $q_viejo = $conexion->query("SELECT venta_id, monto_usd FROM historico_abonos WHERE id = $id_abono AND id_negocio = $id_negocio");
-            if ($q_viejo && $q_viejo->num_rows > 0) {
-                $viejo = $q_viejo->fetch_assoc();
-                $venta_id = intval($viejo['venta_id']);
-                $monto_viejo = floatval($viejo['monto_usd']);
+    if ($es_admin) {
+        $ids_abonos = $conexion->real_escape_string($_GET['eliminar_abono']);
+        $array_ids = explode(',', $ids_abonos);
+        
+        foreach ($array_ids as $id_abono) {
+            $id_abono = intval($id_abono);
+            if ($id_abono > 0) {
+                $q_viejo = $conexion->query("SELECT venta_id, monto_usd FROM historico_abonos WHERE id = $id_abono AND id_negocio = $id_negocio");
+                if ($q_viejo && $q_viejo->num_rows > 0) {
+                    $viejo = $q_viejo->fetch_assoc();
+                    $venta_id = intval($viejo['venta_id']);
+                    $monto_viejo = floatval($viejo['monto_usd']);
 
-                $conexion->query("UPDATE ventas SET deuda_usd = deuda_usd + $monto_viejo WHERE id = $venta_id AND id_negocio = $id_negocio");
-                $conexion->query("DELETE FROM historico_abonos WHERE id = $id_abono AND id_negocio = $id_negocio");
+                    $conexion->query("UPDATE ventas SET deuda_usd = deuda_usd + $monto_viejo WHERE id = $venta_id AND id_negocio = $id_negocio");
+                    $conexion->query("DELETE FROM historico_abonos WHERE id = $id_abono AND id_negocio = $id_negocio");
+                }
             }
         }
     }
@@ -73,13 +212,51 @@ if (isset($_GET['eliminar_abono'])) {
     exit;
 }
 
-$q_tasa = $conexion->query("SELECT tasa_dia FROM configuracion ORDER BY id DESC LIMIT 1");
-$tasa_actual = ($q_tasa && $q_tasa->num_rows > 0) ? floatval($q_tasa->fetch_assoc()['tasa_dia']) : 1;
+// ==========================================
+// 8. OBTENER TASA ACTUAL DEL NEGOCIO
+// ==========================================
+$tasa_actual = 1;
+$q_tasa = $conexion->query("SELECT tasa_dia FROM negocios WHERE id = $id_negocio LIMIT 1");
+if ($q_tasa && $q_tasa->num_rows > 0) {
+    $fila_t = $q_tasa->fetch_assoc();
+    if (isset($fila_t['tasa_dia']) && floatval($fila_t['tasa_dia']) > 0) {
+        $tasa_actual = floatval($fila_t['tasa_dia']);
+    }
+}
+if ($tasa_actual <= 1) {
+    $q_tasa_old = $conexion->query("SELECT tasa_dia FROM configuracion ORDER BY id DESC LIMIT 1");
+    if ($q_tasa_old && $q_tasa_old->num_rows > 0) {
+        $tasa_actual = floatval($q_tasa_old->fetch_assoc()['tasa_dia']);
+    }
+}
 
 $check = $conexion->query("SHOW COLUMNS FROM historico_abonos LIKE 'tasa_pago'");
 if ($check && $check->num_rows == 0) {
     $conexion->query("ALTER TABLE historico_abonos ADD tasa_pago DECIMAL(10,2) NULL");
     $conexion->query("UPDATE historico_abonos ha JOIN ventas v ON ha.venta_id = v.id SET ha.tasa_pago = v.tasa_aplicada");
+}
+
+// ==========================================
+// CATÁLOGO DE CATEGORÍAS Y CONCEPTOS REGISTRADOS POR NEGOCIO
+// ==========================================
+$categorias_guardadas = ['Materia Prima', 'Servicios', 'Personal / Nómina', 'Mantenimiento', 'Transporte / Flete', 'Otros'];
+$mapa_conceptos = []; // [categoria => [nombre1, nombre2, ...]]
+$lista_tipos_gastos = []; // Para el modal de gestión
+
+$q_tipos = $conexion->query("SELECT id, categoria, nombre FROM tipos_gastos WHERE id_negocio = $id_negocio ORDER BY categoria ASC, nombre ASC");
+if ($q_tipos) {
+    while ($rt = $q_tipos->fetch_assoc()) {
+        $c = trim($rt['categoria']);
+        $n = trim($rt['nombre']);
+        if ($c !== '' && !in_array($c, $categorias_guardadas)) {
+            $categorias_guardadas[] = $c;
+        }
+        if ($c !== '' && $n !== '') {
+            if (!isset($mapa_conceptos[$c])) $mapa_conceptos[$c] = [];
+            if (!in_array($n, $mapa_conceptos[$c])) $mapa_conceptos[$c][] = $n;
+            $lista_tipos_gastos[] = $rt;
+        }
+    }
 }
 
 $query_hoy = "SELECT SUM(total_bs) as bs FROM ventas WHERE DATE(fecha) = CURDATE() AND id_negocio = $id_negocio";
@@ -107,41 +284,45 @@ if ($res_grafica) {
     }
 }
 
+// ==========================================
+// 9. FILTROS POR FECHA + HORA + VENDEDOR
+// ==========================================
 $filtro_inicio = $_GET['fecha_inicio'] ?? date('Y-m-d');
-$filtro_fin = $_GET['fecha_fin'] ?? date('Y-m-d');
+$hora_inicio   = $_GET['hora_inicio'] ?? '00:00';
+$filtro_fin    = $_GET['fecha_fin'] ?? date('Y-m-d');
+$hora_fin      = $_GET['hora_fin'] ?? '23:59';
 $filtro_vendedor = $_GET['vendedor_id'] ?? '';
 
-// Filtros base amarrados al negocio
-$where_ventas = ["v.id_negocio = $id_negocio"]; 
-$where_abonos = ["ha.id_negocio = $id_negocio"]; 
-$where_gastos = ["g.id_negocio = $id_negocio"];
+$where_ventas   = ["v.id_negocio = $id_negocio"]; 
+$where_abonos   = ["ha.id_negocio = $id_negocio"]; 
+$where_gastos   = ["g.id_negocio = $id_negocio"];
 $where_ingresos = ["i.id_negocio = $id_negocio"];
 
 if (!empty($filtro_inicio)) {
-    $fecha_esc = $conexion->real_escape_string($filtro_inicio);
-    $where_ventas[] = "DATE(v.fecha) >= '$fecha_esc'";
-    $where_abonos[] = "DATE(ha.fecha) >= '$fecha_esc'";
-    $where_gastos[] = "DATE(g.fecha) >= '$fecha_esc'";
-    $where_ingresos[] = "DATE(i.fecha) >= '$fecha_esc'";
+    $dt_ini = $conexion->real_escape_string($filtro_inicio . ' ' . $hora_inicio . ':00');
+    $where_ventas[]   = "v.fecha >= '$dt_ini'";
+    $where_abonos[]   = "ha.fecha >= '$dt_ini'";
+    $where_gastos[]   = "g.fecha >= '$dt_ini'";
+    $where_ingresos[] = "i.fecha >= '$dt_ini'";
 }
 if (!empty($filtro_fin)) {
-    $fecha_esc = $conexion->real_escape_string($filtro_fin);
-    $where_ventas[] = "DATE(v.fecha) <= '$fecha_esc'";
-    $where_abonos[] = "DATE(ha.fecha) <= '$fecha_esc'";
-    $where_gastos[] = "DATE(g.fecha) <= '$fecha_esc'";
-    $where_ingresos[] = "DATE(i.fecha) <= '$fecha_esc'";
+    $dt_fin = $conexion->real_escape_string($filtro_fin . ' ' . $hora_fin . ':59');
+    $where_ventas[]   = "v.fecha <= '$dt_fin'";
+    $where_abonos[]   = "ha.fecha <= '$dt_fin'";
+    $where_gastos[]   = "g.fecha <= '$dt_fin'";
+    $where_ingresos[] = "i.fecha <= '$dt_fin'";
 }
 if (!empty($filtro_vendedor)) {
     $ven_id = intval($filtro_vendedor);
-    $where_ventas[] = "v.usuario_id = $ven_id";
-    $where_abonos[] = "ha.usuario_id = $ven_id";
-    $where_gastos[] = "g.usuario_id = $ven_id";
+    $where_ventas[]   = "v.usuario_id = $ven_id";
+    $where_abonos[]   = "ha.usuario_id = $ven_id";
+    $where_gastos[]   = "g.usuario_id = $ven_id";
     $where_ingresos[] = "i.usuario_id = $ven_id";
 }
 
-$where_sql_ventas = implode(" AND ", $where_ventas);
-$where_sql_abonos = implode(" AND ", $where_abonos);
-$where_sql_gastos = implode(" AND ", $where_gastos);
+$where_sql_ventas   = implode(" AND ", $where_ventas);
+$where_sql_abonos   = implode(" AND ", $where_abonos);
+$where_sql_gastos   = implode(" AND ", $where_gastos);
 $where_sql_ingresos = implode(" AND ", $where_ingresos);
 
 $q_costo = "SELECT SUM(IFNULL(p.precio_costo, 0) * dv.cantidad) as total_costo_usd 
@@ -323,8 +504,13 @@ if($res_hist_abonos){
     }
 }
 
+// ==========================================
+// 10. GASTOS Y AGLOMERACIÓN POR CATEGORÍA / SUBCATEGORÍA (INSENSIBLE A MAYÚSCULAS)
+// ==========================================
 $total_gastos_usd = 0;
 $total_gastos_bs = 0;
+$resumen_gastos = [];
+
 $q_gastos = "SELECT g.*, u.nombre as vendedor FROM gastos g JOIN usuarios u ON g.usuario_id = u.id WHERE $where_sql_gastos";
 $res_gastos = $conexion->query($q_gastos);
 
@@ -346,6 +532,30 @@ if($res_gastos){
         } else { 
             $caja['otro']['usd'] -= $m_usd; $caja['otro']['bs'] -= $m_bs; 
         }
+
+        // Aglomerar gasto normalizando mayúsculas/minúsculas
+        $cat = !empty($g['categoria']) ? trim($g['categoria']) : 'General';
+        $sub_raw = !empty($g['subcategoria']) ? trim($g['subcategoria']) : trim($g['descripcion']);
+        if ($sub_raw === '') $sub_raw = 'Sin especificar';
+        $sub_key = mb_strtolower($sub_raw, 'UTF-8');
+
+        if (!isset($resumen_gastos[$cat])) {
+            $resumen_gastos[$cat] = ['total_usd' => 0, 'total_bs' => 0, 'items' => []];
+        }
+        $resumen_gastos[$cat]['total_usd'] += $m_usd;
+        $resumen_gastos[$cat]['total_bs']  += $m_bs;
+
+        if (!isset($resumen_gastos[$cat]['items'][$sub_key])) {
+            $resumen_gastos[$cat]['items'][$sub_key] = [
+                'label' => mb_convert_case($sub_raw, MB_CASE_TITLE, 'UTF-8'),
+                'usd' => 0,
+                'bs' => 0,
+                'veces' => 0
+            ];
+        }
+        $resumen_gastos[$cat]['items'][$sub_key]['usd'] += $m_usd;
+        $resumen_gastos[$cat]['items'][$sub_key]['bs']  += $m_bs;
+        $resumen_gastos[$cat]['items'][$sub_key]['veces']++;
 
         $g['tipo_registro'] = 'gasto';
         $g['monto_usd_calc'] = $m_usd;
@@ -402,7 +612,7 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
     <style>
         .pantalla-completa { padding: 2rem; width: 100%; box-sizing: border-box; }
         .grid-dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
-        .panel-filtros { background: white; padding: 1.5rem; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 1.5rem; display: flex; gap: 1rem; align-items: flex-end; flex-wrap: wrap; }
+        .panel-filtros { background: white; padding: 1.5rem; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 1.5rem; display: flex; gap: 0.8rem; align-items: flex-end; flex-wrap: wrap; }
         .detalle-productos { font-size: 0.85rem; color: #475569; max-width: 300px; line-height: 1.4; }
         
         .cajas-cuadre { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
@@ -412,6 +622,12 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
         .caja-monto .monto-secundario { font-size: 0.85rem; color: #64748b; font-weight: bold; }
         .caja-monto.bs { border-color: #3b82f6; } .caja-monto.bs .monto-principal { color: #1e3a8a; }
         .caja-monto.usd { border-color: #10b981; } .caja-monto.usd .monto-principal { color: #065f46; }
+
+        .panel-resumen-gastos { background: white; padding: 1.2rem 1.5rem; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); border-left: 5px solid #ef4444; margin-bottom: 1.5rem; }
+        .grid-cat-gastos { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; margin-top: 0.8rem; }
+        .card-cat-gasto { background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 0.8rem 1rem; }
+        .card-cat-gasto h4 { margin: 0 0 0.5rem 0; color: #991b1b; font-size: 0.9rem; border-bottom: 1px dashed #fca5a5; padding-bottom: 0.3rem; display: flex; justify-content: space-between; }
+        .item-subgasto { display: flex; justify-content: space-between; font-size: 0.85rem; color: #475569; padding: 2px 0; }
 
         .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center; }
         .modal-caja { background: white; padding: 2rem; border-radius: 10px; width: 90%; max-width: 450px; max-height: 90vh; overflow-y: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
@@ -448,9 +664,11 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
         </div>
         <div style="display: flex; align-items: center; gap: 10px; justify-content: flex-end; flex-wrap: wrap;">
             <button onclick="document.getElementById('modalIngreso').style.display='flex'" class="btn-login" style="background-color: #10b981; padding: 0.5rem 1rem; margin: 0; width: auto;">💰 Fondo de Caja</button>
-            <button onclick="document.getElementById('modalGasto').style.display='flex'" class="btn-login" style="background-color: #ef4444; padding: 0.5rem 1rem; margin: 0; width: auto;">💸 Registrar Gasto</button>
+            <button onclick="abrirModalNuevoGasto()" class="btn-login" style="background-color: #ef4444; padding: 0.5rem 1rem; margin: 0; width: auto;">💸 Registrar Gasto</button>
             <button onclick="window.print()" class="btn-login" style="background-color: #64748b; padding: 0.5rem 1rem; margin: 0; width: auto;">🖨️ Imprimir Cuadre</button>
-            <span class="badge-rol" style="background-color: var(--primario); color: white; margin-left: 5px;">MODO ADMINISTRADOR</span>
+            <span class="badge-rol" style="background-color: <?php echo $es_admin ? 'var(--primario)' : '#0284c7'; ?>; color: white; margin-left: 5px;">
+                <?php echo $es_admin ? 'MODO ADMINISTRADOR' : 'MODO VENDEDOR'; ?>
+            </span>
         </div>
     </header>
 
@@ -490,15 +708,23 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
                 <form class="panel-filtros" method="GET" action="">
                     <div>
                         <label style="font-size: 0.85rem; font-weight: bold;">Fecha Desde</label><br>
-                        <input type="date" name="fecha_inicio" value="<?php echo htmlspecialchars($filtro_inicio); ?>" style="padding: 0.6rem; border: 1px solid var(--borde); border-radius: 5px;">
+                        <input type="date" name="fecha_inicio" value="<?php echo htmlspecialchars($filtro_inicio); ?>" style="padding: 0.55rem; border: 1px solid var(--borde); border-radius: 5px;">
+                    </div>
+                    <div>
+                        <label style="font-size: 0.85rem; font-weight: bold;">Hora Desde</label><br>
+                        <input type="time" name="hora_inicio" value="<?php echo htmlspecialchars($hora_inicio); ?>" style="padding: 0.55rem; border: 1px solid var(--borde); border-radius: 5px;">
                     </div>
                     <div>
                         <label style="font-size: 0.85rem; font-weight: bold;">Fecha Hasta</label><br>
-                        <input type="date" name="fecha_fin" value="<?php echo htmlspecialchars($filtro_fin); ?>" style="padding: 0.6rem; border: 1px solid var(--borde); border-radius: 5px;">
+                        <input type="date" name="fecha_fin" value="<?php echo htmlspecialchars($filtro_fin); ?>" style="padding: 0.55rem; border: 1px solid var(--borde); border-radius: 5px;">
+                    </div>
+                    <div>
+                        <label style="font-size: 0.85rem; font-weight: bold;">Hora Hasta</label><br>
+                        <input type="time" name="hora_fin" value="<?php echo htmlspecialchars($hora_fin); ?>" style="padding: 0.55rem; border: 1px solid var(--borde); border-radius: 5px;">
                     </div>
                     <div>
                         <label style="font-size: 0.85rem; font-weight: bold;">Vendedor</label><br>
-                        <select name="vendedor_id" style="padding: 0.6rem; border: 1px solid var(--borde); border-radius: 5px; min-width: 150px;">
+                        <select name="vendedor_id" style="padding: 0.55rem; border: 1px solid var(--borde); border-radius: 5px; min-width: 140px;">
                             <option value="">Todos</option>
                             <?php while ($v = $vendedores->fetch_assoc()): ?>
                                 <option value="<?php echo $v['id']; ?>" <?php if ($filtro_vendedor == $v['id']) echo 'selected'; ?>><?php echo htmlspecialchars($v['nombre']); ?></option>
@@ -506,7 +732,7 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
                         </select>
                     </div>
                     <div>
-                        <button type="submit" class="btn-login" style="margin: 0; padding: 0.6rem 1.5rem;">Filtrar</button>
+                        <button type="submit" class="btn-login" style="margin: 0; padding: 0.55rem 1.3rem;">Filtrar</button>
                         <a href="<?php echo $_SERVER['PHP_SELF']; ?>" style="margin-left: 0.5rem; color: var(--texto-secundario); text-decoration: none; font-size: 0.9rem;">Limpiar</a>
                     </div>
                 </form>
@@ -545,12 +771,34 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
                         <div style="font-size: 0.75rem; font-weight: 500; opacity: 0.9; margin-top: 0.5rem;">(Ingreso en Mercancía - No suma al $)</div>
                     </div>
                     <div style="background: linear-gradient(135deg, #7c2d12, #f59e0b); color: white; padding: 1.5rem; border-radius: 10px; flex: 1; min-width: 200px; box-shadow: 0 4px 10px rgba(245,158,11,0.3);">
-                        <div style="font-size: 0.85rem; font-weight: bold; text-transform: uppercase; opacity: 0.9; margin-bottom: 0.5rem;">📈 Mis Ganancias de Hoy</div>
+                        <div style="font-size: 0.85rem; font-weight: bold; text-transform: uppercase; opacity: 0.9; margin-bottom: 0.5rem;">📈 Mis Ganancias</div>
                         <div style="font-size: 2rem; font-weight: bold;">$<?php echo number_format($ganancia_neta_usd, 2); ?></div>
                         <div style="font-size: 1rem; font-weight: bold; margin-top: 0.2rem; opacity: 0.9;"><?php echo number_format($ganancia_neta_bs, 2, ',', '.'); ?> Bs</div>
                         <div style="font-size: 0.75rem; opacity: 0.8; margin-top: 0.2rem;">(Precio Vendido - Costo)</div>
                     </div>
                 </div>
+
+                <?php if (!empty($resumen_gastos)): ?>
+                <div class="panel-resumen-gastos">
+                    <h3 style="margin: 0; color: #991b1b; font-size: 1rem;">📊 Desglose de Gastos Aglomerados (Período Filtrado)</h3>
+                    <div class="grid-cat-gastos">
+                        <?php foreach ($resumen_gastos as $cat_nombre => $cat_datos): ?>
+                            <div class="card-cat-gasto">
+                                <h4>
+                                    <span><?php echo htmlspecialchars($cat_nombre); ?></span>
+                                    <span>$<?php echo number_format($cat_datos['total_usd'], 2); ?></span>
+                                </h4>
+                                <?php foreach ($cat_datos['items'] as $sub_datos): ?>
+                                    <div class="item-subgasto">
+                                        <span>• <?php echo htmlspecialchars($sub_datos['label']); ?> (<?php echo $sub_datos['veces']; ?>)</span>
+                                        <strong style="color: #dc2626;">$<?php echo number_format($sub_datos['usd'], 2); ?></strong>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+                <?php endif; ?>
 
                 <div class="cajas-cuadre">
                     <?php foreach($caja as $key => $datos): ?>
@@ -593,7 +841,7 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
                                     } elseif ($es_abono) {
                                         $ingreso_usd = $mov['abono_usd']; $ingreso_bs = $mov['abono_bs'];
                                     } else {
-                                        $tasa = floatval($mov['tasa_aplicada'] > 0 ? $mov['tasa_aplicada'] : 36.50);
+                                        $tasa = floatval($mov['tasa_aplicada'] > 0 ? $mov['tasa_aplicada'] : $tasa_actual);
                                         if (strpos($metodo_limpio, 'credito_') === 0) {
                                             $ingreso_usd = $mov['abono_usd']; $ingreso_bs = $mov['abono_usd'] * $tasa;
                                         } elseif ($metodo_limpio == 'credito') {
@@ -606,14 +854,22 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
                                     <tr style="border-bottom: 1px solid #f1f5f9; <?php echo ($es_abono && $metodo_limpio == 'descuento') ? 'background-color: #f3e8ff;' : ($es_abono ? 'background-color: #f8fafc;' : ''); echo $es_gasto ? 'background-color: #fef2f2;' : ''; echo $es_ingreso ? 'background-color: #f0fdf4;' : ''; ?>">
                                         <td style="font-weight: bold; text-align: center;">
                                             <?php if ($es_gasto): ?>
+                                                <?php if ($es_admin): ?>
                                                 <div style="display:flex; gap: 5px; justify-content: center;">
-                                                    <button onclick='abrirEditarGasto(<?php echo json_encode($mov); ?>)' style="padding: 0.2rem 0.5rem; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer;">✏️</button>
-                                                    <a href="acciones_gasto.php?eliminar=<?php echo $mov['id']; ?>" onclick="return confirm('¿Seguro que deseas eliminar este gasto? El dinero volverá a sumarse a la caja.')" style="padding: 0.2rem 0.5rem; background: #ef4444; color: white; text-decoration: none; border-radius: 4px; font-size: 0.8rem; display:flex; align-items:center;">🗑️</a>
+                                                    <button onclick='abrirEditarGasto(<?php echo htmlspecialchars(json_encode($mov), ENT_QUOTES, "UTF-8"); ?>)' style="padding: 0.2rem 0.5rem; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer;">✏️</button>
+                                                    <a href="<?php echo $_SERVER['PHP_SELF']; ?>?eliminar_gasto=<?php echo $mov['id']; ?>" onclick="return confirm('¿Seguro que deseas eliminar este gasto? El dinero volverá a sumarse a la caja.')" style="padding: 0.2rem 0.5rem; background: #ef4444; color: white; text-decoration: none; border-radius: 4px; font-size: 0.8rem; display:flex; align-items:center;">🗑️</a>
                                                 </div>
+                                                <?php else: ?>
+                                                    <span style="color: #ef4444; font-size: 0.85rem;">💸 Gasto</span>
+                                                <?php endif; ?>
                                             <?php elseif ($es_ingreso): ?>
+                                                <?php if ($es_admin): ?>
                                                 <div style="display:flex; gap: 5px; justify-content: center;">
                                                     <a href="<?php echo $_SERVER['PHP_SELF']; ?>?eliminar_ingreso=<?php echo $mov['id']; ?>" onclick="return confirm('¿Seguro que deseas eliminar este fondo inicial? El dinero se restará de la caja.')" style="padding: 0.2rem 0.5rem; background: #ef4444; color: white; text-decoration: none; border-radius: 4px; font-size: 0.8rem; display:flex; align-items:center;" title="Eliminar Ingreso">🗑️</a>
                                                 </div>
+                                                <?php else: ?>
+                                                    <span style="color: #10b981; font-size: 0.85rem;">💰 Fondo</span>
+                                                <?php endif; ?>
                                             <?php elseif ($es_abono): ?>
                                                 <div style="display:flex; gap: 5px; justify-content: center; align-items: center;">
                                                     <?php if ($metodo_limpio == 'descuento'): ?>
@@ -625,20 +881,24 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
                                                             💰 Abono
                                                         </div>
                                                     <?php endif; ?>
+                                                    <?php if ($es_admin): ?>
                                                     <a href="<?php echo $_SERVER['PHP_SELF']; ?>?eliminar_abono=<?php echo $mov['abonos_ids']; ?>" 
                                                        onclick="return confirm('⚠️ ¿Estás seguro de ELIMINAR este registro?\n\nSi eliminas este registro:\n1. El dinero (o descuento) se restará de la caja.\n2. La deuda de $<?php echo number_format($mov['abono_usd'], 2); ?> se le sumará nuevamente al crédito.')" 
                                                        style="padding: 0.3rem 0.5rem; background: #ef4444; color: white; text-decoration: none; border-radius: 4px; font-size: 0.8rem; display:flex; align-items:center;" 
                                                        title="Reversar Abono">🗑️</a>
+                                                    <?php endif; ?>
                                                 </div>
                                             <?php else: ?>
                                                 <div style="display:flex; flex-direction:column; gap: 5px; align-items: center;">
                                                     <a href="imprimir_ticket.php?id=<?php echo $mov['ticket_id']; ?>" target="_blank" style="text-decoration: none; color: #3b82f6; background: #eff6ff; padding: 0.3rem 0.6rem; border-radius: 4px; border: 1px solid #bfdbfe; display: inline-flex; align-items: center; gap: 5px; width: 100%; justify-content: center;">
                                                         🖨️ #<?php echo str_pad($mov['ticket_id'], 5, "0", STR_PAD_LEFT); ?>
                                                     </a>
+                                                    <?php if ($es_admin): ?>
                                                     <div style="display:flex; gap: 5px; width: 100%;">
-                                                        <button onclick='abrirEditarVenta(<?php echo htmlspecialchars(json_encode($mov), ENT_QUOTES, 'UTF-8'); ?>)' style="flex:1; padding: 0.2rem; background: #f59e0b; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8rem;" title="Editar Pago">✏️</button>
+                                                        <button onclick='abrirEditarVenta(<?php echo htmlspecialchars(json_encode($mov), ENT_QUOTES, "UTF-8"); ?>)' style="flex:1; padding: 0.2rem; background: #f59e0b; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8rem;" title="Editar Pago">✏️</button>
                                                         <a href="acciones_venta.php?accion=eliminar&id=<?php echo $mov['ticket_id']; ?>" onclick="return confirm('⚠️ ¿ESTÁS SEGURO? Esta acción ANULARÁ la factura por completo y devolverá los productos al inventario.')" style="flex:1; padding: 0.2rem; background: #ef4444; color: white; text-decoration: none; border-radius: 4px; font-size: 0.8rem; text-align: center;" title="Anular Venta">🗑️</a>
                                                     </div>
+                                                    <?php endif; ?>
                                                 </div>
                                             <?php endif; ?>
                                         </td>
@@ -646,7 +906,17 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
                                         <td style="font-size: 0.9rem;"><?php echo htmlspecialchars($mov['vendedor']); ?></td>
                                         
                                         <td class="detalle-productos">
-                                            <?php if ($es_gasto || $es_ingreso): ?>
+                                            <?php if ($es_gasto): ?>
+                                                <span style="display:inline-block; background:#fee2e2; color:#991b1b; font-size:0.75rem; font-weight:bold; padding:2px 6px; border-radius:4px; margin-bottom:2px;">
+                                                    <?php echo htmlspecialchars($mov['categoria'] ?? 'General'); ?>
+                                                </span>
+                                                <?php if (!empty($mov['subcategoria'])): ?>
+                                                    <strong style="color:#1e293b;"> - <?php echo htmlspecialchars($mov['subcategoria']); ?></strong>
+                                                <?php endif; ?>
+                                                <?php if (!empty($mov['descripcion']) && $mov['descripcion'] !== ($mov['subcategoria'] ?? '')): ?>
+                                                    <br><small style="color:#64748b;"><?php echo htmlspecialchars($mov['descripcion']); ?></small>
+                                                <?php endif; ?>
+                                            <?php elseif ($es_ingreso): ?>
                                                 <strong><?php echo htmlspecialchars($mov['descripcion']); ?></strong>
                                             <?php else: ?>
                                                 <?php echo $mov['detalle_productos']; ?>
@@ -782,6 +1052,52 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
         </div>
     </main>
 
+    <?php if ($es_admin): ?>
+    <!-- Modal Gestionar Conceptos de Gastos -->
+    <div id="modalGestionarConceptos" class="modal-overlay" style="z-index: 1100; <?php echo isset($_GET['conceptos']) ? 'display: flex;' : ''; ?>">
+        <div class="modal-caja" style="border-top: 5px solid #475569; max-width: 500px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.8rem;">
+                <h2 style="margin: 0; color: var(--texto-principal); font-size: 1.25rem;">🏷️ Conceptos de Gastos</h2>
+                <button type="button" onclick="document.getElementById('modalGestionarConceptos').style.display='none'" style="background: none; border: none; font-size: 1.2rem; cursor: pointer; color: #64748b;">✖</button>
+            </div>
+            <p style="font-size: 0.85rem; color: #64748b; margin-top: 0; margin-bottom: 1rem;">
+                Elimina conceptos mal escritos o duplicados de la lista desplegable. Esto no borra tus gastos ya registrados.
+            </p>
+            <div style="max-height: 360px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 6px;">
+                <?php if (!empty($lista_tipos_gastos)): ?>
+                    <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+                        <thead>
+                            <tr style="background: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+                                <th style="text-align: left; padding: 0.6rem;">Categoría</th>
+                                <th style="text-align: left; padding: 0.6rem;">Concepto</th>
+                                <th style="text-align: center; padding: 0.6rem; width: 60px;">Borrar</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($lista_tipos_gastos as $tg): ?>
+                                <tr style="border-bottom: 1px solid #f1f5f9;">
+                                    <td style="padding: 0.6rem; color: #64748b; font-size: 0.82rem; font-weight: bold;"><?php echo htmlspecialchars($tg['categoria']); ?></td>
+                                    <td style="padding: 0.6rem; color: #1e293b; font-weight: bold;"><?php echo htmlspecialchars($tg['nombre']); ?></td>
+                                    <td style="padding: 0.6rem; text-align: center;">
+                                        <a href="<?php echo $_SERVER['PHP_SELF']; ?>?eliminar_tipo_gasto=<?php echo intval($tg['id']); ?>"
+                                           onclick="return confirm('¿Eliminar \'<?php echo htmlspecialchars($tg['nombre'], ENT_QUOTES); ?>\' de la lista de selección?\n\nLos gastos ya guardados en el historial no se borrarán.')"
+                                           style="padding: 0.25rem 0.5rem; background: #ef4444; color: white; text-decoration: none; border-radius: 4px; font-size: 0.8rem;"
+                                           title="Quitar de la lista">🗑️</a>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                <?php else: ?>
+                    <p style="text-align: center; color: #64748b; padding: 1.5rem; margin: 0;">Aún no hay conceptos registrados.</p>
+                <?php endif; ?>
+            </div>
+            <div style="display: flex; justify-content: flex-end; margin-top: 1rem;">
+                <button type="button" onclick="document.getElementById('modalGestionarConceptos').style.display='none'" style="padding: 0.7rem 1.5rem; border: none; border-radius: 5px; background: #e2e8f0; color: #475569; cursor: pointer; font-weight: bold;">Cerrar</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Modal Editar Pago Venta -->
     <div id="modalEditarVenta" class="modal-overlay">
         <div class="modal-caja" style="border-top: 5px solid #f59e0b;">
@@ -895,8 +1211,9 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
             </form>
         </div>
     </div>
+    <?php endif; ?>
 
-    <!-- Modales de Gasto e Ingreso -->
+    <!-- Modal Ingreso Fondo de Caja -->
     <div id="modalIngreso" class="modal-overlay">
         <div class="modal-caja" style="border-top: 5px solid #10b981;">
             <h2 style="margin-bottom: 1rem; color: var(--texto-principal);">💰 Ingresar Fondo de Caja</h2>
@@ -927,18 +1244,43 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
         </div>
     </div>
 
-    <!-- Modal Gastos -->
+    <!-- Modal Registrar Nuevo Gasto (Con selectores reutilizables) -->
     <div id="modalGasto" class="modal-overlay">
         <div class="modal-caja" style="border-top: 5px solid #ef4444;">
             <h2 style="margin-bottom: 1rem; color: var(--texto-principal);">💸 Registrar Nuevo Gasto</h2>
-            <form action="guardar_gasto.php" method="POST">
-                <div style="margin-bottom: 1rem;">
-                    <label style="display:block; margin-bottom: 0.5rem; font-weight: bold; font-size: 0.9rem;">Concepto del Gasto</label>
-                    <input type="text" name="descripcion" required style="width: 100%; padding: 0.8rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;" placeholder="¿Qué se pagó?">
+            <form action="<?php echo $_SERVER['PHP_SELF']; ?>" method="POST">
+                <input type="hidden" name="nuevo_gasto" value="1">
+                
+                <div style="margin-bottom: 0.9rem;">
+                    <label style="display:block; margin-bottom: 0.4rem; font-weight: bold; font-size: 0.9rem;">Categoría Principal</label>
+                    <select name="categoria" id="nuevo_gasto_cat" onchange="actualizarSelectConceptos('nuevo')" required style="width: 100%; padding: 0.75rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box; background: white;">
+                        <?php foreach ($categorias_guardadas as $cg): ?>
+                            <option value="<?php echo htmlspecialchars($cg); ?>"><?php echo htmlspecialchars($cg); ?></option>
+                        <?php endforeach; ?>
+                        <option value="__nueva__" style="font-weight:bold; color:#0284c7;">➕ Crear nueva categoría...</option>
+                    </select>
+                    <input type="text" name="categoria_nueva" id="nuevo_gasto_cat_nueva" placeholder="Escribe la nueva categoría..." style="display: none; margin-top: 0.5rem; width: 100%; padding: 0.75rem; border: 1px solid #3b82f6; border-radius: 5px; box-sizing: border-box;">
                 </div>
-                <div style="margin-bottom: 1rem;">
-                    <label style="display:block; margin-bottom: 0.5rem; font-weight: bold; font-size: 0.9rem;">¿De dónde salió el dinero?</label>
-                    <select name="metodo_pago" required style="width: 100%; padding: 0.8rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;">
+
+                <div style="margin-bottom: 0.9rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
+                        <label style="font-weight: bold; font-size: 0.9rem; margin: 0;">Tipo / Concepto a Medir</label>
+                        <?php if ($es_admin): ?>
+                            <button type="button" onclick="document.getElementById('modalGestionarConceptos').style.display='flex'" style="background: none; border: none; color: #3b82f6; font-size: 0.8rem; font-weight: bold; cursor: pointer; padding: 0;">⚙️ Gestionar lista</button>
+                        <?php endif; ?>
+                    </div>
+                    <select name="subcategoria_select" id="nuevo_gasto_sub" onchange="toggleInputNuevoConcepto('nuevo')" required style="width: 100%; padding: 0.75rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box; background: white;">
+                    </select>
+                    <input type="text" name="subcategoria_nueva" id="nuevo_gasto_sub_nueva" placeholder="Ej: Mango, Parchita, Electricidad..." style="display: none; margin-top: 0.5rem; width: 100%; padding: 0.75rem; border: 1px solid #10b981; border-radius: 5px; box-sizing: border-box;">
+                </div>
+
+                <div style="margin-bottom: 0.9rem;">
+                    <label style="display:block; margin-bottom: 0.4rem; font-weight: bold; font-size: 0.9rem;">Nota / Detalle (Opcional)</label>
+                    <input type="text" name="descripcion" style="width: 100%; padding: 0.75rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;" placeholder="Ej: 2 cestas en el mercado">
+                </div>
+                <div style="margin-bottom: 0.9rem;">
+                    <label style="display:block; margin-bottom: 0.4rem; font-weight: bold; font-size: 0.9rem;">¿De dónde salió el dinero?</label>
+                    <select name="metodo_pago" required style="width: 100%; padding: 0.75rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;">
                         <option value="efectivo_usd">💵 Efectivo USD (En Dólares)</option>
                         <option value="efectivo_bs">💵 Efectivo BS (En Bolívares)</option>
                         <option value="pago_movil">📱 Pago Móvil (En Bolívares)</option>
@@ -948,8 +1290,8 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
                     </select>
                 </div>
                 <div style="margin-bottom: 1.5rem;">
-                    <label style="display:block; margin-bottom: 0.5rem; font-weight: bold; font-size: 0.9rem;">Monto a descontar</label>
-                    <input type="number" step="0.01" name="monto" required style="width: 100%; padding: 0.8rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;" placeholder="Monto crudo en su moneda">
+                    <label style="display:block; margin-bottom: 0.4rem; font-weight: bold; font-size: 0.9rem;">Monto a descontar</label>
+                    <input type="number" step="0.01" name="monto" required style="width: 100%; padding: 0.75rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;" placeholder="Monto crudo en su moneda">
                 </div>
                 <div style="display: flex; gap: 1rem; justify-content: flex-end;">
                     <button type="button" onclick="document.getElementById('modalGasto').style.display='none'" style="padding: 0.8rem 1.5rem; border: none; border-radius: 5px; background: #e2e8f0; color: #475569; cursor: pointer; font-weight: bold;">Cancelar</button>
@@ -959,20 +1301,40 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
         </div>
     </div>
 
-    <!-- Formulario de Edición de Gastos -->
+    <?php if ($es_admin): ?>
+    <!-- Modal Editar Gasto -->
     <div id="modalEditarGasto" class="modal-overlay">
         <div class="modal-caja" style="border-top: 5px solid #3b82f6;">
             <h2 style="margin-bottom: 1rem; color: var(--texto-principal);">✏️ Editar Gasto</h2>
-            <form action="acciones_gasto.php" method="POST">
-                <input type="hidden" name="accion" value="editar">
+            <form action="<?php echo $_SERVER['PHP_SELF']; ?>" method="POST">
+                <input type="hidden" name="editar_gasto_local" value="1">
                 <input type="hidden" name="gasto_id" id="edit_id">
-                <div style="margin-bottom: 1rem;">
-                    <label style="display:block; margin-bottom: 0.5rem; font-weight: bold; font-size: 0.9rem;">Concepto del Gasto</label>
-                    <input type="text" name="descripcion" id="edit_descripcion" required style="width: 100%; padding: 0.8rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;">
+
+                <div style="margin-bottom: 0.9rem;">
+                    <label style="display:block; margin-bottom: 0.4rem; font-weight: bold; font-size: 0.9rem;">Categoría Principal</label>
+                    <select name="categoria" id="edit_gasto_cat" onchange="actualizarSelectConceptos('edit')" required style="width: 100%; padding: 0.75rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box; background: white;">
+                        <?php foreach ($categorias_guardadas as $cg): ?>
+                            <option value="<?php echo htmlspecialchars($cg); ?>"><?php echo htmlspecialchars($cg); ?></option>
+                        <?php endforeach; ?>
+                        <option value="__nueva__" style="font-weight:bold; color:#0284c7;">➕ Crear nueva categoría...</option>
+                    </select>
+                    <input type="text" name="categoria_nueva" id="edit_gasto_cat_nueva" placeholder="Escribe la nueva categoría..." style="display: none; margin-top: 0.5rem; width: 100%; padding: 0.75rem; border: 1px solid #3b82f6; border-radius: 5px; box-sizing: border-box;">
                 </div>
-                <div style="margin-bottom: 1rem;">
-                    <label style="display:block; margin-bottom: 0.5rem; font-weight: bold; font-size: 0.9rem;">¿De dónde salió el dinero?</label>
-                    <select name="metodo_pago" id="edit_metodo" required style="width: 100%; padding: 0.8rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;">
+
+                <div style="margin-bottom: 0.9rem;">
+                    <label style="display:block; margin-bottom: 0.4rem; font-weight: bold; font-size: 0.9rem;">Tipo / Concepto a Medir</label>
+                    <select name="subcategoria_select" id="edit_gasto_sub" onchange="toggleInputNuevoConcepto('edit')" required style="width: 100%; padding: 0.75rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box; background: white;">
+                    </select>
+                    <input type="text" name="subcategoria_nueva" id="edit_gasto_sub_nueva" placeholder="Ej: Mango, Parchita, Electricidad..." style="display: none; margin-top: 0.5rem; width: 100%; padding: 0.75rem; border: 1px solid #10b981; border-radius: 5px; box-sizing: border-box;">
+                </div>
+
+                <div style="margin-bottom: 0.9rem;">
+                    <label style="display:block; margin-bottom: 0.4rem; font-weight: bold; font-size: 0.9rem;">Nota / Detalle</label>
+                    <input type="text" name="descripcion" id="edit_descripcion" style="width: 100%; padding: 0.75rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;">
+                </div>
+                <div style="margin-bottom: 0.9rem;">
+                    <label style="display:block; margin-bottom: 0.4rem; font-weight: bold; font-size: 0.9rem;">¿De dónde salió el dinero?</label>
+                    <select name="metodo_pago" id="edit_metodo" required style="width: 100%; padding: 0.75rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;">
                         <option value="efectivo_usd">💵 Efectivo USD (En Dólares)</option>
                         <option value="efectivo_bs">💵 Efectivo BS (En Bolívares)</option>
                         <option value="pago_movil">📱 Pago Móvil (En Bolívares)</option>
@@ -982,8 +1344,8 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
                     </select>
                 </div>
                 <div style="margin-bottom: 1.5rem;">
-                    <label style="display:block; margin-bottom: 0.5rem; font-weight: bold; font-size: 0.9rem;">Monto Corregido</label>
-                    <input type="number" step="0.01" name="monto" id="edit_monto" required style="width: 100%; padding: 0.8rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;">
+                    <label style="display:block; margin-bottom: 0.4rem; font-weight: bold; font-size: 0.9rem;">Monto Corregido</label>
+                    <input type="number" step="0.01" name="monto" id="edit_monto" required style="width: 100%; padding: 0.75rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;">
                 </div>
                 <div style="display: flex; gap: 1rem; justify-content: flex-end;">
                     <button type="button" onclick="document.getElementById('modalEditarGasto').style.display='none'" style="padding: 0.8rem 1.5rem; border: none; border-radius: 5px; background: #e2e8f0; color: #475569; cursor: pointer; font-weight: bold;">Cancelar</button>
@@ -992,18 +1354,20 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
             </form>
         </div>
     </div>
+    <?php endif; ?>
 
     <!-- TICKET DE IMPRESIÓN ACTUALIZADO -->
     <div id="ticket-print">
         <h2>Lia POS</h2>
         <h3>REPORTE DE CAJA</h3>
         <p class="ticket-text-center">Impresión: <?php echo date('d/m/Y h:i A'); ?></p>
-        <p class="ticket-text-center">Período: <?php echo date('d/m/y', strtotime($filtro_inicio)); ?> - <?php echo date('d/m/y', strtotime($filtro_fin)); ?></p>
+        <p class="ticket-text-center">Desde: <?php echo date('d/m/y', strtotime($filtro_inicio)) . ' ' . $hora_inicio; ?></p>
+        <p class="ticket-text-center">Hasta: <?php echo date('d/m/y', strtotime($filtro_fin)) . ' ' . $hora_fin; ?></p>
         
         <div class="ticket-divider"></div>
         
         <p class="ticket-bold">RESUMEN DE OPERACIONES</p>
-        <div class="ticket-flex" style="color: #10b981;">
+        <div class="ticket-flex">
             <span>Fondo de Caja (Inicio):</span>
             <span>+$<?php echo number_format($total_ingresos_extra_usd, 2); ?></span>
         </div>
@@ -1015,10 +1379,24 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
             <span>Abonos Créditos:</span>
             <span>$<?php echo number_format($t_abonos_usd, 2); ?></span>
         </div>
-        <div class="ticket-flex" style="color: #444;">
+        <div class="ticket-flex">
             <span>Gastos Extra:</span>
             <span>-$<?php echo number_format($total_gastos_usd, 2); ?></span>
         </div>
+
+        <?php if (!empty($resumen_gastos)): ?>
+        <div class="ticket-divider"></div>
+        <p class="ticket-bold" style="margin-top: 6px;">DETALLE DE GASTOS</p>
+        <?php foreach ($resumen_gastos as $cat_nombre => $cat_datos): ?>
+            <p class="ticket-bold" style="margin-top: 4px; text-transform: uppercase;"><?php echo htmlspecialchars($cat_nombre); ?> ($<?php echo number_format($cat_datos['total_usd'], 2); ?>)</p>
+            <?php foreach ($cat_datos['items'] as $sub_datos): ?>
+                <div class="ticket-flex" style="font-size: 12px;">
+                    <span>- <?php echo htmlspecialchars($sub_datos['label']); ?> (<?php echo $sub_datos['veces']; ?>)</span>
+                    <span>$<?php echo number_format($sub_datos['usd'], 2); ?></span>
+                </div>
+            <?php endforeach; ?>
+        <?php endforeach; ?>
+        <?php endif; ?>
         
         <div class="ticket-divider"></div>
         
@@ -1075,6 +1453,94 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
     </div>
 
     <script>
+        const mapaConceptosGastos = <?php echo json_encode($mapa_conceptos, JSON_UNESCAPED_UNICODE); ?>;
+
+        function actualizarSelectConceptos(prefijo, valorPreseleccionado = '') {
+            const selCat = document.getElementById(prefijo + '_gasto_cat');
+            const inpCatNueva = document.getElementById(prefijo + '_gasto_cat_nueva');
+            const selSub = document.getElementById(prefijo + '_gasto_sub');
+            const inpSubNueva = document.getElementById(prefijo + '_gasto_sub_nueva');
+
+            if (!selCat || !selSub) return;
+
+            const catVal = selCat.value;
+            if (catVal === '__nueva__') {
+                inpCatNueva.style.display = 'block';
+                inpCatNueva.required = true;
+            } else {
+                inpCatNueva.style.display = 'none';
+                inpCatNueva.required = false;
+                inpCatNueva.value = '';
+            }
+
+            const lista = mapaConceptosGastos[catVal] || [];
+            selSub.innerHTML = '';
+
+            lista.forEach(item => {
+                const opt = document.createElement('option');
+                opt.value = item;
+                opt.textContent = item;
+                selSub.appendChild(opt);
+            });
+
+            const optNuevo = document.createElement('option');
+            optNuevo.value = '__nuevo__';
+            optNuevo.textContent = '➕ Registrar nuevo concepto...';
+            optNuevo.style.fontWeight = 'bold';
+            optNuevo.style.color = '#059669';
+            selSub.appendChild(optNuevo);
+
+            if (valorPreseleccionado && lista.includes(valorPreseleccionado)) {
+                selSub.value = valorPreseleccionado;
+            } else if (valorPreseleccionado && valorPreseleccionado !== '') {
+                selSub.value = '__nuevo__';
+                inpSubNueva.value = valorPreseleccionado;
+            } else if (lista.length > 0) {
+                selSub.value = lista[0];
+            } else {
+                selSub.value = '__nuevo__';
+            }
+
+            toggleInputNuevoConcepto(prefijo);
+        }
+
+        function toggleInputNuevoConcepto(prefijo) {
+            const selSub = document.getElementById(prefijo + '_gasto_sub');
+            const inpSubNueva = document.getElementById(prefijo + '_gasto_sub_nueva');
+            if (!selSub || !inpSubNueva) return;
+
+            if (selSub.value === '__nuevo__') {
+                inpSubNueva.style.display = 'block';
+                inpSubNueva.required = true;
+            } else {
+                inpSubNueva.style.display = 'none';
+                inpSubNueva.required = false;
+                inpSubNueva.value = '';
+            }
+        }
+
+        function abrirModalNuevoGasto() {
+            actualizarSelectConceptos('nuevo');
+            document.getElementById('modalGasto').style.display = 'flex';
+        }
+
+        function abrirEditarGasto(datos) {
+            document.getElementById('edit_id').value = datos.id;
+            const selCat = document.getElementById('edit_gasto_cat');
+            const catVal = datos.categoria || 'Materia Prima';
+            if (Array.from(selCat.options).some(o => o.value === catVal)) {
+                selCat.value = catVal;
+            } else {
+                selCat.value = '__nueva__';
+                document.getElementById('edit_gasto_cat_nueva').value = catVal;
+            }
+            actualizarSelectConceptos('edit', datos.subcategoria || datos.descripcion || '');
+            document.getElementById('edit_descripcion').value = datos.descripcion || '';
+            document.getElementById('edit_monto').value = datos.monto;
+            document.getElementById('edit_metodo').value = datos.metodo_pago;
+            document.getElementById('modalEditarGasto').style.display = 'flex';
+        }
+
         function abrirEditarVenta(mov) {
             document.getElementById('edit_venta_id').value = mov.ticket_id;
             document.getElementById('edit_venta_tasa').value = mov.tasa_aplicada;
@@ -1281,14 +1747,6 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
         }
 
         document.querySelectorAll('.input-edicion-mixta').forEach(inp => inp.addEventListener('input', calcularEdicionMixta));
-
-        function abrirEditarGasto(datos) {
-            document.getElementById('edit_id').value = datos.id;
-            document.getElementById('edit_descripcion').value = datos.descripcion;
-            document.getElementById('edit_monto').value = datos.monto;
-            document.getElementById('edit_metodo').value = datos.metodo_pago;
-            document.getElementById('modalEditarGasto').style.display = 'flex';
-        }
 
         const ctx = document.getElementById('graficaVentas').getContext('2d');
         const meses = <?php echo json_encode($meses_nombres); ?>;

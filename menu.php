@@ -169,7 +169,7 @@ $morosos = $resultado_morosos->fetch_assoc()['total_morosos'];
             </a>
             <?php endif; ?>
 
-            <?php if ($rolUsuario == 'admin'): ?>
+            <?php if ($rolUsuario == 'admin' || $rolUsuario == 'vendedor'): ?>
             <a href="reportes.php" class="tarjeta-menu bg-reportes">
                 <div class="icono-menu" style="font-size: 3rem; margin-bottom: 1rem;">📊</div>
                 <h3 style="margin-bottom: 0.5rem;">Reportes y Caja</h3>
