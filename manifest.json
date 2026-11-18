@@ -4,7 +4,7 @@
   "description": "Sistema de Punto de Venta y Gestión",
   "start_url": "./index.php",
   "display": "standalone",
-  "orientation": "any",
+  "orientation": "landscape",
   "background_color": "#f8fafc",
   "theme_color": "#1e3a8a",
   
