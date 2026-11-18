@@ -11,6 +11,60 @@ require_once 'conexion.php';
 
 $id_negocio = $_SESSION['id_negocio']; // <- VARIABLE MULTI-TENANT
 
+// =========================================================================
+// ENDPOINT AJAX: CREACIÓN RÁPIDA DE CLIENTE DESDE EL POS
+// =========================================================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion']) && $_POST['accion'] === 'crear_cliente_rapido') {
+    header('Content-Type: application/json; charset=utf-8');
+    $cedula = trim($_POST['cedula'] ?? '');
+    $nombre = trim($_POST['nombre'] ?? '');
+    $telefono = trim($_POST['telefono'] ?? '');
+
+    if ($cedula === '' || $nombre === '') {
+        echo json_encode(['success' => false, 'mensaje' => 'La cédula y el nombre son obligatorios.']);
+        exit;
+    }
+
+    // Verificar si ya existe esa cédula en este negocio
+    $stmt_chk = $conexion->prepare("SELECT id, nombre, telefono FROM clientes WHERE cedula = ? AND id_negocio = ?");
+    $stmt_chk->bind_param("si", $cedula, $id_negocio);
+    $stmt_chk->execute();
+    $res_chk = $stmt_chk->get_result();
+
+    if ($res_chk && $res_chk->num_rows > 0) {
+        $existente = $res_chk->fetch_assoc();
+        $stmt_chk->close();
+        echo json_encode([
+            'success' => false,
+            'mensaje' => 'Ya existe un cliente con esa cédula (' . $existente['nombre'] . ').'
+        ]);
+        exit;
+    }
+    $stmt_chk->close();
+
+    $stmt_ins = $conexion->prepare("INSERT INTO clientes (id_negocio, cedula, nombre, telefono) VALUES (?, ?, ?, ?)");
+    $stmt_ins->bind_param("isss", $id_negocio, $cedula, $nombre, $telefono);
+
+    if ($stmt_ins->execute()) {
+        $nuevo_id = $stmt_ins->insert_id;
+        $stmt_ins->close();
+        echo json_encode([
+            'success' => true,
+            'cliente' => [
+                'id' => $nuevo_id,
+                'cedula' => $cedula,
+                'nombre' => $nombre,
+                'telefono' => $telefono
+            ]
+        ]);
+    } else {
+        $error = $stmt_ins->error;
+        $stmt_ins->close();
+        echo json_encode(['success' => false, 'mensaje' => 'Error al guardar: ' . $error]);
+    }
+    exit;
+}
+
 // Asegurar que la columna imagen exista por si entran primero a pos.php
 $check_img_col = $conexion->query("SHOW COLUMNS FROM productos LIKE 'imagen'");
 if ($check_img_col && $check_img_col->num_rows == 0) {
@@ -34,7 +88,7 @@ if ($res_tasa && $res_tasa->num_rows > 0) {
 $stmt_tasa->close();
 
 // 4. Consultar todos los productos (AISLADO POR NEGOCIO)
-$query_productos = "SELECT id, nombre, codigo_barras, precio_usd, precio_mayor_bcv, precio_efectivo_detal, precio_efectivo_mayor, tipo_unidad, stock, imagen FROM productos WHERE id_negocio = $id_negocio";
+$query_productos = "SELECT id, nombre, codigo_barras, precio_usd, precio_mayor_bcv, precio_efectivo_detal, precio_efectivo_mayor, tipo_unidad, stock, imagen FROM productos WHERE id_negocio = $id_negocio ORDER BY nombre ASC";
 $resultado_productos = $conexion->query($query_productos);
 ?>
 <!DOCTYPE html>
@@ -51,6 +105,82 @@ $resultado_productos = $conexion->query($query_productos);
 
         .selector-tarifa { margin-bottom: 1rem; padding: 0.8rem; background: #f8fafc; border-radius: 8px; border: 1px solid #cbd5e1; }
         .selector-tarifa select { width: 100%; padding: 0.6rem; border-radius: 5px; border: 1px solid #cbd5e1; font-weight: bold; font-size: 1rem; color: #1e3a8a; background: white; }
+
+        .btn-toggle-pos {
+            background: #e2e8f0;
+            color: #334155;
+            border: 1px solid #cbd5e1;
+            padding: 0.45rem 0.85rem;
+            border-radius: 6px;
+            font-weight: bold;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+        .btn-toggle-pos.activo {
+            background: #10b981;
+            color: white;
+            border-color: #059669;
+        }
+
+        .control-rapido {
+            display: none;
+            align-items: center;
+            justify-content: space-between;
+            gap: 4px;
+            width: 100%;
+        }
+        .btn-stepper {
+            width: 36px;
+            height: 36px;
+            border: none;
+            border-radius: 6px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            cursor: pointer;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        .btn-stepper-menos { background: #ef4444; }
+        .btn-stepper-menos:active { background: #dc2626; }
+        .btn-stepper-mas { background: #10b981; }
+        .btn-stepper-mas:active { background: #059669; }
+        .input-rapido {
+            width: 100%;
+            min-width: 40px;
+            text-align: center;
+            font-weight: bold;
+            font-size: 1rem;
+            padding: 0.35rem;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            background: #f8fafc;
+            color: #1e3a8a;
+        }
+
+        .modal-cliente-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(15, 23, 42, 0.6);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+            padding: 1rem;
+            box-sizing: border-box;
+        }
+        .modal-cliente-caja {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 10px;
+            width: 100%;
+            max-width: 380px;
+            box-shadow: 0 15px 30px rgba(0,0,0,0.25);
+        }
 
         .img-producto-pos {
             width: 100%;
@@ -164,7 +294,8 @@ $resultado_productos = $conexion->query($query_productos);
             .tarjeta-producto { padding: 0.8rem; }
             .tarjeta-producto h3 { font-size: 0.95rem; }
             .accion-rapida { display: flex; flex-direction: column; gap: 0.5rem; }
-            .accion-rapida input, .accion-rapida button { width: 100%; box-sizing: border-box; margin: 0; font-size: 16px; }
+            .control-clasico { display: flex; flex-direction: column; gap: 0.5rem; width: 100%; }
+            .control-clasico input, .control-clasico button { width: 100%; box-sizing: border-box; margin: 0; font-size: 16px; }
             .cuadricula-pagos { grid-template-columns: repeat(2, 1fr); gap: 0.5rem; }
             .opciones-pago, .totales { padding: 1rem 0; }
         }
@@ -172,9 +303,11 @@ $resultado_productos = $conexion->query($query_productos);
 </head>
 <body>
     <header class="top-bar">
-        <div style="display: flex; align-items: center; gap: 1rem;">
+        <div style="display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap;">
             <a href="menu.php" style="text-decoration: none; font-size: 1.5rem; color: var(--texto-principal);" title="Volver al Menú Principal">⬅️</a>
-            <h2>Lia POS</h2>
+            <h2 style="margin: 0;">Lia POS</h2>
+            <button type="button" id="btn-toggle-mostrar" class="btn-toggle-pos" onclick="toggleMostrarTodos()" title="Mostrar todos los productos o solo al buscar">🔍 Solo Buscar</button>
+            <button type="button" id="btn-toggle-rapido" class="btn-toggle-pos" onclick="toggleModoRapido()" title="Cambiar entre botón Añadir o botones rápidos +/-">🔢 Modo Clásico</button>
         </div>
 
         <div style="display: flex; align-items: center; flex-wrap: wrap;">
@@ -248,12 +381,22 @@ $resultado_productos = $conexion->query($query_productos);
                             </p>
                             
                             <div class="accion-rapida">
-                                <?php if ($tipo_unidad == 'kg'): ?>
-                                    <input type="number" step="0.001" min="0.001" placeholder="Ej: 0.400" class="input-cantidad" name="cantidad_<?php echo $id; ?>">
-                                <?php else: ?>
-                                    <input type="number" step="1" min="1" value="1" class="input-cantidad" name="cantidad_<?php echo $id; ?>">
-                                <?php endif; ?>
-                                <button class="btn-agregar">Añadir</button>
+                                <!-- Modo Clásico (por defecto) -->
+                                <div class="control-clasico" style="display: flex; gap: 0.4rem; width: 100%;">
+                                    <?php if ($tipo_unidad == 'kg'): ?>
+                                        <input type="number" step="0.001" min="0.001" max="<?php echo $stock; ?>" placeholder="Ej: 0.400" class="input-cantidad" name="cantidad_<?php echo $id; ?>">
+                                    <?php else: ?>
+                                        <input type="number" step="1" min="1" max="<?php echo $stock; ?>" value="1" class="input-cantidad" name="cantidad_<?php echo $id; ?>">
+                                    <?php endif; ?>
+                                    <button type="button" class="btn-agregar">Añadir</button>
+                                </div>
+
+                                <!-- Modo Rápido (+/- directo al carrito) -->
+                                <div class="control-rapido" data-prod-id="<?php echo $id; ?>">
+                                    <button type="button" class="btn-stepper btn-stepper-menos" onclick="ajustarCantidadRapida(<?php echo $id; ?>, -1)">−</button>
+                                    <input type="number" min="0" max="<?php echo $stock; ?>" step="<?php echo ($tipo_unidad == 'kg') ? '0.1' : '1'; ?>" value="0" class="input-rapido" id="input-rapido-<?php echo $id; ?>" onchange="establecerCantidadRapida(<?php echo $id; ?>, this.value)">
+                                    <button type="button" class="btn-stepper btn-stepper-mas" onclick="ajustarCantidadRapida(<?php echo $id; ?>, 1)">+</button>
+                                </div>
                             </div>
                         </div>
                 <?php 
@@ -280,7 +423,10 @@ $resultado_productos = $conexion->query($query_productos);
                 <div class="panel-cliente" style="background: white; padding: 1rem; border-radius: 8px; border: 1px solid var(--borde); margin-bottom: 1rem; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
                     <div id="contenedor-buscador-cliente" style="position: relative;">
                         <label style="font-size: 0.85rem; font-weight: bold; color: var(--texto-secundario); display: block; margin-bottom: 0.5rem;">👤 Asociar Cliente al Ticket:</label>
-                        <input type="text" id="buscador-cliente-pos" placeholder="🔍 Buscar por Cédula o Nombre..." style="width: 100%; box-sizing: border-box; padding: 0.8rem 1rem; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 16px; background-color: #f8fafc;" autocomplete="off">
+                        <div style="display: flex; gap: 0.5rem; align-items: stretch;">
+                            <input type="text" id="buscador-cliente-pos" placeholder="🔍 Buscar por Cédula o Nombre..." style="flex: 1; min-width: 0; box-sizing: border-box; padding: 0.8rem 1rem; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 16px; background-color: #f8fafc;" autocomplete="off">
+                            <button type="button" onclick="abrirModalNuevoCliente()" style="background: #10b981; color: white; border: none; padding: 0 1rem; border-radius: 6px; font-weight: bold; cursor: pointer; white-space: nowrap; font-size: 0.9rem;" title="Registrar nuevo cliente">➕ Nuevo</button>
+                        </div>
                         <div id="sugerencias-clientes" style="position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid var(--borde); border-radius: 4px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); z-index: 100; display: none; max-height: 200px; overflow-y: auto;"></div>
                     </div>
 
@@ -527,6 +673,30 @@ $resultado_productos = $conexion->query($query_productos);
         </aside>
     </main>
 
+    <!-- MODAL: REGISTRO RÁPIDO DE CLIENTE -->
+    <div id="modal-nuevo-cliente" class="modal-cliente-overlay">
+        <div class="modal-cliente-caja">
+            <h3 style="margin-top: 0; margin-bottom: 1rem; color: #1e3a8a; border-bottom: 2px solid #f1f5f9; padding-bottom: 0.5rem;">👤 Registrar Nuevo Cliente</h3>
+            <div style="margin-bottom: 0.8rem;">
+                <label style="font-size: 0.85rem; font-weight: bold; color: #334155; display: block; margin-bottom: 0.3rem;">Cédula o RIF *</label>
+                <input type="text" id="nuevo-cli-cedula" placeholder="Ej: V-12345678" style="width: 100%; box-sizing: border-box; padding: 0.7rem; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 16px;">
+            </div>
+            <div style="margin-bottom: 0.8rem;">
+                <label style="font-size: 0.85rem; font-weight: bold; color: #334155; display: block; margin-bottom: 0.3rem;">Nombre Completo *</label>
+                <input type="text" id="nuevo-cli-nombre" placeholder="Ej: Juan Pérez" style="width: 100%; box-sizing: border-box; padding: 0.7rem; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 16px;">
+            </div>
+            <div style="margin-bottom: 1.2rem;">
+                <label style="font-size: 0.85rem; font-weight: bold; color: #334155; display: block; margin-bottom: 0.3rem;">WhatsApp / Celular</label>
+                <input type="text" id="nuevo-cli-telefono" placeholder="Ej: 04141234567" style="width: 100%; box-sizing: border-box; padding: 0.7rem; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 16px;">
+            </div>
+            <div id="nuevo-cli-error" style="display: none; color: #b91c1c; background: #fee2e2; padding: 0.6rem; border-radius: 6px; font-size: 0.85rem; margin-bottom: 1rem; font-weight: bold;"></div>
+            <div style="display: flex; gap: 0.8rem;">
+                <button type="button" id="btn-guardar-cli-rapido" onclick="guardarClienteRapido()" class="btn-login" style="flex: 1; background: #10b981; margin: 0; padding: 0.75rem;">Guardar Cliente</button>
+                <button type="button" onclick="cerrarModalNuevoCliente()" class="btn-login" style="flex: 1; background: #94a3b8; margin: 0; padding: 0.75rem;">Cancelar</button>
+            </div>
+        </div>
+    </div>
+
     <script src="js/main.js?v=1.2"></script>
     <script>
         'use strict';
@@ -534,6 +704,320 @@ $resultado_productos = $conexion->query($query_productos);
         let streamCamara = null;
         let modoCamara = 'environment'; 
         const tasaDelDia = <?php echo floatval($tasa); ?>;
+        const idNegocioActual = <?php echo intval($id_negocio); ?>;
+
+        // =========================================================================
+        // PREFERENCIAS GUARDADAS (VER TODOS + MODO RÁPIDO +/-)
+        // =========================================================================
+        const KEY_MOSTRAR_TODOS = 'pos_mostrar_todos_' + idNegocioActual;
+        const KEY_MODO_RAPIDO   = 'pos_modo_rapido_' + idNegocioActual;
+
+        let mostrarTodosActivo = localStorage.getItem(KEY_MOSTRAR_TODOS) === 'true';
+        let modoRapidoActivo   = localStorage.getItem(KEY_MODO_RAPIDO) === 'true';
+
+        // Capturar y restaurar scroll para evitar que la lista salte hacia arriba
+        function capturarScrollPos() {
+            const panel = document.querySelector('.panel-productos');
+            const grid  = document.querySelector('.cuadricula-productos');
+            return {
+                winY: window.scrollY || document.documentElement.scrollTop || 0,
+                panelY: panel ? panel.scrollTop : 0,
+                gridY: grid ? grid.scrollTop : 0
+            };
+        }
+
+        function restaurarScrollPos(pos) {
+            if (!pos) return;
+            const panel = document.querySelector('.panel-productos');
+            const grid  = document.querySelector('.cuadricula-productos');
+            const buscador = document.getElementById('buscar-producto');
+
+            if (mostrarTodosActivo && buscador && document.activeElement === buscador) {
+                buscador.blur();
+            }
+            window.scrollTo(0, pos.winY);
+            if (panel) panel.scrollTop = pos.panelY;
+            if (grid)  grid.scrollTop  = pos.gridY;
+        }
+
+        function aplicarPreferenciaMostrar() {
+            const btn = document.getElementById('btn-toggle-mostrar');
+            const buscador = document.getElementById('buscar-producto');
+            const textoBusqueda = buscador ? buscador.value.trim() : '';
+
+            if (btn) {
+                if (mostrarTodosActivo) {
+                    btn.classList.add('activo');
+                    btn.innerText = '👁️ Ver Todos';
+                } else {
+                    btn.classList.remove('activo');
+                    btn.innerText = '🔍 Solo Buscar';
+                }
+            }
+
+            if (textoBusqueda === '') {
+                document.querySelectorAll('.tarjeta-producto').forEach(t => {
+                    t.style.display = mostrarTodosActivo ? '' : 'none';
+                });
+            }
+        }
+
+        function toggleMostrarTodos() {
+            mostrarTodosActivo = !mostrarTodosActivo;
+            localStorage.setItem(KEY_MOSTRAR_TODOS, mostrarTodosActivo ? 'true' : 'false');
+            aplicarPreferenciaMostrar();
+        }
+
+        function aplicarPreferenciaModoRapido() {
+            const btn = document.getElementById('btn-toggle-rapido');
+            if (btn) {
+                if (modoRapidoActivo) {
+                    btn.classList.add('activo');
+                    btn.innerText = '⚡ Modo +/-';
+                } else {
+                    btn.classList.remove('activo');
+                    btn.innerText = '🔢 Modo Clásico';
+                }
+            }
+
+            document.querySelectorAll('.control-clasico').forEach(el => {
+                el.style.display = modoRapidoActivo ? 'none' : 'flex';
+            });
+            document.querySelectorAll('.control-rapido').forEach(el => {
+                el.style.display = modoRapidoActivo ? 'flex' : 'none';
+            });
+
+            sincronizarContadoresRapidos();
+        }
+
+        function toggleModoRapido() {
+            modoRapidoActivo = !modoRapidoActivo;
+            localStorage.setItem(KEY_MODO_RAPIDO, modoRapidoActivo ? 'true' : 'false');
+            aplicarPreferenciaModoRapido();
+        }
+
+        function sincronizarContadoresRapidos() {
+            document.querySelectorAll('.input-rapido').forEach(inp => inp.value = 0);
+            if (typeof window.carrito !== 'undefined' && Array.isArray(window.carrito)) {
+                window.carrito.forEach(item => {
+                    const inp = document.getElementById('input-rapido-' + item.id);
+                    if (inp) {
+                        inp.value = parseFloat(item.cantidad) || 0;
+                    }
+                });
+            }
+        }
+
+        function ajustarCantidadRapida(idProd, delta) {
+            const inp = document.getElementById('input-rapido-' + idProd);
+            const actual = parseFloat(inp ? inp.value : 0) || 0;
+            const nueva = Math.max(0, Math.round((actual + delta) * 1000) / 1000);
+            establecerCantidadRapida(idProd, nueva);
+        }
+
+        function establecerCantidadRapida(idProd, nuevaCantidad) {
+            const tarjeta = document.querySelector(`.tarjeta-producto[data-id="${idProd}"]`);
+            if (!tarjeta) return;
+
+            const stockDisp = parseFloat(tarjeta.getAttribute('data-stock')) || 0;
+            let cant = parseFloat(nuevaCantidad);
+            if (isNaN(cant) || cant < 0) cant = 0;
+
+            // Validar que no supere el inventario disponible
+            if (cant > stockDisp) {
+                alert(`⚠️ Stock insuficiente. Solo hay ${stockDisp} disponible(s) en inventario.`);
+                cant = stockDisp;
+            }
+
+            const inp = document.getElementById('input-rapido-' + idProd);
+            if (inp) inp.value = cant;
+
+            if (typeof window.carrito === 'undefined' || !Array.isArray(window.carrito)) return;
+
+            const scrollGuardado = capturarScrollPos();
+            const idx = window.carrito.findIndex(item => String(item.id) === String(idProd));
+
+            if (cant === 0) {
+                if (idx !== -1) {
+                    window.carrito.splice(idx, 1);
+                }
+            } else if (idx !== -1) {
+                const item = window.carrito[idx];
+                item.cantidad = cant;
+                const precioUnit = parseFloat(tarjeta.getAttribute('data-precio')) || 0;
+                if (item.subtotal !== undefined) item.subtotal = precioUnit * cant;
+            } else {
+                // Aprovechamos el botón clásico oculto para que main.js cree el objeto con su formato exacto
+                const inputClasico = tarjeta.querySelector('.input-cantidad');
+                const btnClasico = tarjeta.querySelector('.btn-agregar');
+                if (inputClasico && btnClasico) {
+                    inputClasico.value = cant;
+                    btnClasico.click();
+                    inputClasico.value = (tarjeta.getAttribute('data-unidad') === 'kg') ? '' : '1';
+                }
+            }
+
+            // Mantener visibles las tarjetas y fijar el scroll de inmediato
+            aplicarPreferenciaMostrar();
+            if (typeof window.actualizarTotalesCarrito === 'function') window.actualizarTotalesCarrito();
+            if (typeof window.actualizarTicket === 'function') window.actualizarTicket();
+            restaurarScrollPos(scrollGuardado);
+
+            setTimeout(() => {
+                corregirRedondeoGlobal();
+                sincronizarContadoresRapidos();
+                aplicarPreferenciaMostrar();
+                restaurarScrollPos(scrollGuardado);
+            }, 40);
+        }
+
+        // =========================================================================
+        // MODAL Y REGISTRO RÁPIDO DE CLIENTE
+        // =========================================================================
+        function abrirModalNuevoCliente(textoInicial = '') {
+            const buscadorVal = textoInicial || (document.getElementById('buscador-cliente-pos')?.value.trim() || '');
+            const inpCedula = document.getElementById('nuevo-cli-cedula');
+            const inpNombre = document.getElementById('nuevo-cli-nombre');
+            const inpTel    = document.getElementById('nuevo-cli-telefono');
+            const divErr    = document.getElementById('nuevo-cli-error');
+
+            inpCedula.value = '';
+            inpNombre.value = '';
+            inpTel.value    = '';
+            divErr.style.display = 'none';
+
+            if (buscadorVal !== '') {
+                if (/^[vjeVJE]?-?\d+$/.test(buscadorVal)) {
+                    inpCedula.value = buscadorVal;
+                } else {
+                    inpNombre.value = buscadorVal;
+                }
+            }
+
+            document.getElementById('modal-nuevo-cliente').style.display = 'flex';
+            setTimeout(() => {
+                if (inpCedula.value === '') inpCedula.focus();
+                else inpNombre.focus();
+            }, 80);
+        }
+
+        function cerrarModalNuevoCliente() {
+            document.getElementById('modal-nuevo-cliente').style.display = 'none';
+        }
+
+        function guardarClienteRapido() {
+            const cedula   = document.getElementById('nuevo-cli-cedula').value.trim();
+            const nombre   = document.getElementById('nuevo-cli-nombre').value.trim();
+            const telefono = document.getElementById('nuevo-cli-telefono').value.trim();
+            const divErr   = document.getElementById('nuevo-cli-error');
+            const btn      = document.getElementById('btn-guardar-cli-rapido');
+
+            if (cedula === '' || nombre === '') {
+                divErr.innerText = '⚠️ Por favor ingresa Cédula y Nombre Completo.';
+                divErr.style.display = 'block';
+                return;
+            }
+
+            divErr.style.display = 'none';
+            btn.disabled = true;
+            btn.innerText = 'Guardando...';
+
+            const formData = new URLSearchParams();
+            formData.append('accion', 'crear_cliente_rapido');
+            formData.append('cedula', cedula);
+            formData.append('nombre', nombre);
+            formData.append('telefono', telefono);
+
+            fetch('pos.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: formData
+            })
+            .then(r => r.json())
+            .then(data => {
+                btn.disabled = false;
+                btn.innerText = 'Guardar Cliente';
+
+                if (data.success && data.cliente) {
+                    document.getElementById('cliente-cedula').value = data.cliente.cedula;
+                    document.getElementById('cliente-nombre').value = data.cliente.nombre;
+                    document.getElementById('cliente-telefono').value = data.cliente.telefono;
+                    document.getElementById('display-cliente-nombre').innerText = data.cliente.nombre;
+                    document.getElementById('display-cliente-cedula').innerText = data.cliente.cedula;
+                    document.getElementById('tarjeta-cliente-seleccionado').style.display = 'flex';
+                    document.getElementById('contenedor-buscador-cliente').style.display = 'none';
+                    const sug = document.getElementById('sugerencias-clientes');
+                    if (sug) sug.style.display = 'none';
+
+                    cerrarModalNuevoCliente();
+                } else {
+                    divErr.innerText = '❌ ' + (data.mensaje || 'No se pudo guardar el cliente.');
+                    divErr.style.display = 'block';
+                }
+            })
+            .catch(() => {
+                btn.disabled = false;
+                btn.innerText = 'Guardar Cliente';
+                divErr.innerText = '❌ Error de conexión al guardar el cliente.';
+                divErr.style.display = 'block';
+            });
+        }
+
+        // Eventos iniciales y observadores
+        document.addEventListener('DOMContentLoaded', () => {
+            const sugBox = document.getElementById('sugerencias-clientes');
+            const inpBusqCli = document.getElementById('buscador-cliente-pos');
+            if (sugBox && inpBusqCli) {
+                const obsCli = new MutationObserver(() => {
+                    const txt = inpBusqCli.value.trim();
+                    const contenido = sugBox.innerText.toLowerCase();
+                    if (txt.length >= 2 && (contenido.includes('no se encontr') || contenido.includes('sin resultados') || sugBox.children.length === 0)) {
+                        if (!sugBox.querySelector('.btn-crear-desde-sug')) {
+                            const divCrear = document.createElement('div');
+                            divCrear.className = 'btn-crear-desde-sug';
+                            divCrear.style.cssText = 'padding: 0.7rem; background: #f0fdf4; border-top: 1px solid #bbf7d0; text-align: center; cursor: pointer; color: #166534; font-weight: bold; font-size: 0.9rem;';
+                            divCrear.innerHTML = `➕ ¿No existe? Crear cliente "${txt}"`;
+                            divCrear.onclick = () => abrirModalNuevoCliente(txt);
+                            sugBox.appendChild(divCrear);
+                            sugBox.style.display = 'block';
+                        }
+                    }
+                });
+                obsCli.observe(sugBox, { childList: true, subtree: true });
+            }
+
+            // Re-aplicar "Ver Todos" cuando se borra el texto del buscador de productos
+            const buscadorProd = document.getElementById('buscar-producto');
+            if (buscadorProd) {
+                buscadorProd.addEventListener('input', () => {
+                    setTimeout(aplicarPreferenciaMostrar, 30);
+                });
+            }
+
+            // Mantener los productos visibles y fijos en su posición tras hacer clic en "Añadir"
+            document.querySelectorAll('.btn-agregar').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const scrollGuardado = capturarScrollPos();
+                    setTimeout(() => {
+                        aplicarPreferenciaMostrar();
+                        if (modoRapidoActivo) sincronizarContadoresRapidos();
+                        restaurarScrollPos(scrollGuardado);
+                    }, 40);
+                });
+            });
+
+            // Sincronizar contadores +/- si se modifica el ticket desde la lista
+            const listaTicket = document.getElementById('lista-ticket');
+            if (listaTicket) {
+                const obsTicket = new MutationObserver(() => {
+                    if (modoRapidoActivo) sincronizarContadoresRapidos();
+                });
+                obsTicket.observe(listaTicket, { childList: true, subtree: true });
+            }
+
+            aplicarPreferenciaMostrar();
+            aplicarPreferenciaModoRapido();
+        });
 
         function limpiarInputsPagoYCamara(fotoGuardada = '') {
             ['recibido-usd', 'vuelto-dado-usd', 'vuelto-dado-bs', 'abono-usd',
@@ -663,14 +1147,15 @@ $resultado_productos = $conexion->query($query_productos);
             alternarPanelesPago();
 
             if (typeof window.actualizarTicket === 'function') window.actualizarTicket();
-            setTimeout(corregirRedondeoGlobal, 50);
+            setTimeout(() => {
+                corregirRedondeoGlobal();
+                sincronizarContadoresRapidos();
+            }, 50);
 
             let buscador = document.getElementById('buscar-producto');
             if (buscador) {
-                if (buscador.value === '') {
-                    document.querySelectorAll('.tarjeta-producto').forEach(t => t.style.display = 'none');
-                }
-                buscador.focus(); 
+                aplicarPreferenciaMostrar();
+                if (!mostrarTodosActivo) buscador.focus();
             }
         }
 
@@ -777,16 +1262,18 @@ $resultado_productos = $conexion->query($query_productos);
                 let buscador = document.getElementById('buscar-producto');
                 if(buscador) {
                     buscador.value = '';
-                    document.querySelectorAll('.tarjeta-producto').forEach(t => t.style.display = 'none');
-                    buscador.focus();
+                    aplicarPreferenciaMostrar();
+                    if (!mostrarTodosActivo) buscador.focus();
                 }
+                sincronizarContadoresRapidos();
             }, 300);
         };
 
         window.addEventListener('focus', function() {
             setTimeout(() => {
                 let buscador = document.getElementById('buscar-producto');
-                if(buscador && !document.querySelector('.modal-overlay[style*="display: flex"]')) {
+                const modalCli = document.getElementById('modal-nuevo-cliente');
+                if(buscador && !mostrarTodosActivo && !document.querySelector('.modal-overlay[style*="display: flex"]') && (!modalCli || modalCli.style.display !== 'flex')) {
                     buscador.focus();
                 }
             }, 150);
