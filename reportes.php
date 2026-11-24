@@ -36,6 +36,11 @@ if ($check_subcat && $check_subcat->num_rows == 0) {
     $conexion->query("ALTER TABLE gastos ADD subcategoria VARCHAR(100) NULL AFTER categoria");
 }
 
+$check_tasa_gasto = $conexion->query("SHOW COLUMNS FROM gastos LIKE 'tasa_aplicada'");
+if ($check_tasa_gasto && $check_tasa_gasto->num_rows == 0) {
+    $conexion->query("ALTER TABLE gastos ADD tasa_aplicada DECIMAL(10,2) NULL AFTER metodo_pago");
+}
+
 $check_tipos = $conexion->query("SHOW TABLES LIKE 'tipos_gastos'");
 if ($check_tipos && $check_tipos->num_rows == 0) {
     $conexion->query("CREATE TABLE tipos_gastos (
@@ -49,6 +54,28 @@ if ($check_tipos && $check_tipos->num_rows == 0) {
     $conexion->query("INSERT IGNORE INTO tipos_gastos (id_negocio, categoria, nombre)
                       SELECT DISTINCT id_negocio, IFNULL(NULLIF(TRIM(categoria), ''), 'General'), TRIM(subcategoria)
                       FROM gastos WHERE subcategoria IS NOT NULL AND TRIM(subcategoria) != ''");
+}
+
+// ==========================================
+// 1.2 OBTENER NOMBRE Y TASA ACTUAL DEL NEGOCIO (NECESARIO PARA PROCESAR GASTOS)
+// ==========================================
+$tasa_actual = 1;
+$nombre_negocio = 'Lia POS';
+$q_tasa = $conexion->query("SELECT nombre, tasa_dia FROM negocios WHERE id = $id_negocio LIMIT 1");
+if ($q_tasa && $q_tasa->num_rows > 0) {
+    $fila_t = $q_tasa->fetch_assoc();
+    if (!empty($fila_t['nombre'])) {
+        $nombre_negocio = $fila_t['nombre'];
+    }
+    if (isset($fila_t['tasa_dia']) && floatval($fila_t['tasa_dia']) > 0) {
+        $tasa_actual = floatval($fila_t['tasa_dia']);
+    }
+}
+if ($tasa_actual <= 1) {
+    $q_tasa_old = $conexion->query("SELECT tasa_dia FROM configuracion ORDER BY id DESC LIMIT 1");
+    if ($q_tasa_old && $q_tasa_old->num_rows > 0) {
+        $tasa_actual = floatval($q_tasa_old->fetch_assoc()['tasa_dia']);
+    }
 }
 
 // ==========================================
@@ -88,6 +115,17 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['nuevo_gasto'])) {
     $monto = floatval($_POST['monto'] ?? 0);
     $user_id = intval($_SESSION['usuario_id']);
 
+    $m_lower = strtolower($metodo);
+    $es_bs_post = (strpos($m_lower, 'bs') !== false || strpos($m_lower, 'movil') !== false || strpos($m_lower, 'biopago') !== false || strpos($m_lower, 'punto') !== false);
+    $tasa_aplicada_gasto = $tasa_actual;
+    if ($es_bs_post) {
+        $tipo_tasa = $_POST['tipo_tasa'] ?? 'bcv';
+        $tasa_manual = floatval($_POST['tasa_aplicada'] ?? 0);
+        if ($tipo_tasa === 'manual' && $tasa_manual > 0) {
+            $tasa_aplicada_gasto = $tasa_manual;
+        }
+    }
+
     $desc_final = ($nota !== '') ? $nota : ($subcategoria !== '' ? $subcategoria : $categoria);
     if ($subcategoria === '') $subcategoria = $desc_final;
 
@@ -98,9 +136,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['nuevo_gasto'])) {
         $stmt_cat->execute();
         $stmt_cat->close();
 
-        // Guardar gasto
-        $stmt = $conexion->prepare("INSERT INTO gastos (id_negocio, categoria, subcategoria, descripcion, monto, metodo_pago, usuario_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
-        $stmt->bind_param("isssdsi", $id_negocio, $categoria, $subcategoria, $desc_final, $monto, $metodo, $user_id);
+        // Guardar gasto con su tasa aplicada
+        $stmt = $conexion->prepare("INSERT INTO gastos (id_negocio, categoria, subcategoria, descripcion, monto, metodo_pago, tasa_aplicada, usuario_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt->bind_param("isssdsdi", $id_negocio, $categoria, $subcategoria, $desc_final, $monto, $metodo, $tasa_aplicada_gasto, $user_id);
         $stmt->execute();
         $stmt->close();
     }
@@ -129,6 +167,17 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['editar_gasto_local']))
         $metodo = trim($_POST['metodo_pago'] ?? 'efectivo_usd');
         $monto = floatval($_POST['monto'] ?? 0);
 
+        $m_lower = strtolower($metodo);
+        $es_bs_post = (strpos($m_lower, 'bs') !== false || strpos($m_lower, 'movil') !== false || strpos($m_lower, 'biopago') !== false || strpos($m_lower, 'punto') !== false);
+        $tasa_aplicada_gasto = $tasa_actual;
+        if ($es_bs_post) {
+            $tipo_tasa = $_POST['tipo_tasa'] ?? 'bcv';
+            $tasa_manual = floatval($_POST['tasa_aplicada'] ?? 0);
+            if ($tipo_tasa === 'manual' && $tasa_manual > 0) {
+                $tasa_aplicada_gasto = $tasa_manual;
+            }
+        }
+
         if ($subcategoria === '') $subcategoria = $desc;
         if ($desc === '') $desc = $subcategoria;
 
@@ -138,8 +187,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['editar_gasto_local']))
             $stmt_cat->execute();
             $stmt_cat->close();
 
-            $stmt = $conexion->prepare("UPDATE gastos SET categoria = ?, subcategoria = ?, descripcion = ?, metodo_pago = ?, monto = ? WHERE id = ? AND id_negocio = ?");
-            $stmt->bind_param("ssssdii", $categoria, $subcategoria, $desc, $metodo, $monto, $gasto_id, $id_negocio);
+            $stmt = $conexion->prepare("UPDATE gastos SET categoria = ?, subcategoria = ?, descripcion = ?, metodo_pago = ?, tasa_aplicada = ?, monto = ? WHERE id = ? AND id_negocio = ?");
+            $stmt->bind_param("ssssddii", $categoria, $subcategoria, $desc, $metodo, $tasa_aplicada_gasto, $monto, $gasto_id, $id_negocio);
             $stmt->execute();
             $stmt->close();
         }
@@ -213,23 +262,8 @@ if (isset($_GET['eliminar_abono'])) {
 }
 
 // ==========================================
-// 8. OBTENER TASA ACTUAL DEL NEGOCIO
+// 8. VERIFICAR COLUMNA TASA_PAGO EN ABONOS
 // ==========================================
-$tasa_actual = 1;
-$q_tasa = $conexion->query("SELECT tasa_dia FROM negocios WHERE id = $id_negocio LIMIT 1");
-if ($q_tasa && $q_tasa->num_rows > 0) {
-    $fila_t = $q_tasa->fetch_assoc();
-    if (isset($fila_t['tasa_dia']) && floatval($fila_t['tasa_dia']) > 0) {
-        $tasa_actual = floatval($fila_t['tasa_dia']);
-    }
-}
-if ($tasa_actual <= 1) {
-    $q_tasa_old = $conexion->query("SELECT tasa_dia FROM configuracion ORDER BY id DESC LIMIT 1");
-    if ($q_tasa_old && $q_tasa_old->num_rows > 0) {
-        $tasa_actual = floatval($q_tasa_old->fetch_assoc()['tasa_dia']);
-    }
-}
-
 $check = $conexion->query("SHOW COLUMNS FROM historico_abonos LIKE 'tasa_pago'");
 if ($check && $check->num_rows == 0) {
     $conexion->query("ALTER TABLE historico_abonos ADD tasa_pago DECIMAL(10,2) NULL");
@@ -505,7 +539,7 @@ if($res_hist_abonos){
 }
 
 // ==========================================
-// 10. GASTOS Y AGLOMERACIÓN POR CATEGORÍA / SUBCATEGORÍA (INSENSIBLE A MAYÚSCULAS)
+// 10. GASTOS Y AGLOMERACIÓN POR CATEGORÍA / SUBCATEGORÍA (CON TASA PROPIA DEL GASTO)
 // ==========================================
 $total_gastos_usd = 0;
 $total_gastos_bs = 0;
@@ -519,11 +553,14 @@ if($res_gastos){
         $m = strtolower(trim($g['metodo_pago']));
         $monto_crudo = floatval($g['monto']);
         $es_bs = (strpos($m, 'bs') !== false || strpos($m, 'movil') !== false || strpos($m, 'biopago') !== false || strpos($m, 'punto') !== false);
+        $tasa_gasto = (isset($g['tasa_aplicada']) && floatval($g['tasa_aplicada']) > 0) ? floatval($g['tasa_aplicada']) : $tasa_actual;
         
         if ($es_bs) {
-            $m_bs = $monto_crudo; $m_usd = $monto_crudo / $tasa_actual;
+            $m_bs = $monto_crudo;
+            $m_usd = ($tasa_gasto > 0) ? ($monto_crudo / $tasa_gasto) : 0;
         } else {
-            $m_usd = $monto_crudo; $m_bs = $monto_crudo * $tasa_actual;
+            $m_usd = $monto_crudo;
+            $m_bs = $monto_crudo * $tasa_gasto;
         }
         $total_gastos_usd += $m_usd; $total_gastos_bs += $m_bs;
 
@@ -560,6 +597,7 @@ if($res_gastos){
         $g['tipo_registro'] = 'gasto';
         $g['monto_usd_calc'] = $m_usd;
         $g['monto_bs_calc'] = $m_bs;
+        $g['tasa_usada_calc'] = $tasa_gasto;
         $movimientos[] = $g;
     }
 }
@@ -600,6 +638,16 @@ usort($movimientos, function($a, $b) {
 });
 
 $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('admin', 'vendedor') AND id_negocio = $id_negocio");
+$lista_vendedores = [];
+$nombre_vendedor_filtro = 'Todos';
+if ($vendedores) {
+    while ($v = $vendedores->fetch_assoc()) {
+        $lista_vendedores[] = $v;
+        if (!empty($filtro_vendedor) && intval($filtro_vendedor) == intval($v['id'])) {
+            $nombre_vendedor_filtro = $v['nombre'];
+        }
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -609,6 +657,9 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
     <title>Reportes Estadísticos - Mi Negocio POS</title>
     <link rel="stylesheet" href="css/style.css?v=<?php echo time(); ?>">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style id="estilo-pagina-print">
+        @page { margin: 0mm; size: 80mm 297mm; }
+    </style>
     <style>
         .pantalla-completa { padding: 2rem; width: 100%; box-sizing: border-box; }
         .grid-dashboard { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
@@ -636,13 +687,25 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
         .fila-mixta label { font-weight: bold; font-size: 0.85rem; width: 45%; }
         .fila-mixta input { width: 55%; padding: 0.4rem; border: 1px solid var(--borde); border-radius: 4px; }
 
-        #ticket-print { display: none; }
+        .caja-tasa-gasto { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 0.85rem; margin-bottom: 0.9rem; display: none; }
+        .caja-tasa-gasto label { font-size: 0.85rem; font-weight: bold; color: #1e3a8a; display: block; margin-bottom: 0.35rem; }
+
+        #ticket-print, #reporte-transacciones-print { display: none; }
 
         @media print {
-            @page { margin: 0mm; size: 80mm 297mm; }
-            html, body { background: white !important; color: black !important; padding: 0; margin: 0; width: 80mm; }
-            body > *:not(#ticket-print) { display: none !important; }
-            #ticket-print { display: block !important; width: 74mm; margin: 0 auto; padding: 2mm 0; font-family: 'Courier New', Courier, monospace !important; font-size: 13px; line-height: 1.3; color: #000; }
+            /* MODO 1: IMPRESIÓN DE CUADRE TÉRMICO 80MM */
+            body.print-cuadre, body:not(.print-transacciones) {
+                background: white !important; color: black !important; padding: 0; margin: 0; width: 80mm;
+            }
+            body.print-cuadre > *:not(#ticket-print),
+            body:not(.print-transacciones) > *:not(#ticket-print) {
+                display: none !important;
+            }
+            body.print-cuadre #ticket-print,
+            body:not(.print-transacciones) #ticket-print {
+                display: block !important; width: 74mm; margin: 0 auto; padding: 2mm 0;
+                font-family: 'Courier New', Courier, monospace !important; font-size: 13px; line-height: 1.3; color: #000;
+            }
             #ticket-print h2 { font-size: 16px; margin: 0 0 5px 0; font-weight: bold; text-align: center; }
             #ticket-print h3 { font-size: 14px; margin: 0 0 5px 0; text-align: center; }
             #ticket-print p { margin: 2px 0; }
@@ -653,6 +716,33 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
             .ticket-table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
             .ticket-table td { padding: 4px 0; border-bottom: 1px dotted #ccc; vertical-align: top; }
             .ticket-table td:last-child { text-align: right; font-weight: bold; }
+
+            /* MODO 2: IMPRESIÓN DE TRANSACCIONES (HOJA CARTA / REGISTRO FÍSICO) */
+            body.print-transacciones {
+                background: white !important; color: #000 !important; padding: 0; margin: 0; width: 100% !important;
+                font-family: Arial, Helvetica, sans-serif !important;
+            }
+            body.print-transacciones > *:not(#reporte-transacciones-print) {
+                display: none !important;
+            }
+            body.print-transacciones #reporte-transacciones-print {
+                display: block !important; width: 100%; color: #000; font-size: 11px; line-height: 1.35;
+            }
+            .rep-header { text-align: center; border-bottom: 2px solid #000; padding-bottom: 8px; margin-bottom: 10px; }
+            .rep-header h2 { margin: 0; font-size: 18px; text-transform: uppercase; }
+            .rep-header p { margin: 2px 0; font-size: 11px; }
+            .rep-meta { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; font-size: 11px; background: #f8fafc; padding: 6px 8px; border: 1px solid #cbd5e1; }
+            .rep-tabla { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
+            .rep-tabla th, .rep-tabla td { border: 1px solid #94a3b8; padding: 5px 6px; text-align: left; vertical-align: top; }
+            .rep-tabla th { background: #e2e8f0 !important; font-weight: bold; font-size: 10.5px; text-transform: uppercase; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .rep-tabla td.num { text-align: right; white-space: nowrap; }
+            .rep-resumen-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; page-break-inside: avoid; }
+            .rep-box { border: 1px solid #000; padding: 8px 10px; }
+            .rep-box h4 { margin: 0 0 6px 0; font-size: 12px; border-bottom: 1px solid #000; padding-bottom: 3px; text-transform: uppercase; }
+            .rep-linea { display: flex; justify-content: space-between; margin: 3px 0; font-size: 11px; }
+            .rep-linea.total { font-weight: bold; font-size: 12px; border-top: 1px dashed #000; padding-top: 4px; margin-top: 5px; }
+            .rep-firmas { display: flex; justify-content: space-around; margin-top: 35px; page-break-inside: avoid; text-align: center; }
+            .rep-firmas div { width: 38%; border-top: 1px solid #000; padding-top: 4px; font-size: 11px; }
         }
     </style>
 </head>
@@ -665,7 +755,8 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
         <div style="display: flex; align-items: center; gap: 10px; justify-content: flex-end; flex-wrap: wrap;">
             <button onclick="document.getElementById('modalIngreso').style.display='flex'" class="btn-login" style="background-color: #10b981; padding: 0.5rem 1rem; margin: 0; width: auto;">💰 Fondo de Caja</button>
             <button onclick="abrirModalNuevoGasto()" class="btn-login" style="background-color: #ef4444; padding: 0.5rem 1rem; margin: 0; width: auto;">💸 Registrar Gasto</button>
-            <button onclick="window.print()" class="btn-login" style="background-color: #64748b; padding: 0.5rem 1rem; margin: 0; width: auto;">🖨️ Imprimir Cuadre</button>
+            <button onclick="imprimirCuadre()" class="btn-login" style="background-color: #64748b; padding: 0.5rem 1rem; margin: 0; width: auto;">🖨️ Imprimir Cuadre</button>
+            <button onclick="imprimirTransacciones()" class="btn-login" style="background-color: #0284c7; padding: 0.5rem 1rem; margin: 0; width: auto;">📋 Imprimir Transacciones</button>
             <span class="badge-rol" style="background-color: <?php echo $es_admin ? 'var(--primario)' : '#0284c7'; ?>; color: white; margin-left: 5px;">
                 <?php echo $es_admin ? 'MODO ADMINISTRADOR' : 'MODO VENDEDOR'; ?>
             </span>
@@ -726,9 +817,9 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
                         <label style="font-size: 0.85rem; font-weight: bold;">Vendedor</label><br>
                         <select name="vendedor_id" style="padding: 0.55rem; border: 1px solid var(--borde); border-radius: 5px; min-width: 140px;">
                             <option value="">Todos</option>
-                            <?php while ($v = $vendedores->fetch_assoc()): ?>
+                            <?php foreach ($lista_vendedores as $v): ?>
                                 <option value="<?php echo $v['id']; ?>" <?php if ($filtro_vendedor == $v['id']) echo 'selected'; ?>><?php echo htmlspecialchars($v['nombre']); ?></option>
-                            <?php endwhile; ?>
+                            <?php endforeach; ?>
                         </select>
                     </div>
                     <div>
@@ -927,6 +1018,9 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
                                             <?php 
                                             if ($es_gasto) {
                                                 echo "<span style='font-weight:bold; color: #ef4444;'>GASTO (" . strtoupper(str_replace('_', ' ', $mov['metodo_pago'])) . ")</span>";
+                                                if ($es_moneda_bs && !empty($mov['tasa_usada_calc'])) {
+                                                    echo "<br><small style='color:#475569;'>Tasa: " . number_format($mov['tasa_usada_calc'], 2, ',', '.') . " Bs</small>";
+                                                }
                                             } elseif ($es_ingreso) {
                                                 echo "<span style='font-weight:bold; color: #10b981;'>FONDO CAJA (" . strtoupper(str_replace('_', ' ', $mov['metodo_pago'])) . ")</span>";
                                             } elseif ($es_abono) {
@@ -1244,7 +1338,7 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
         </div>
     </div>
 
-    <!-- Modal Registrar Nuevo Gasto (Con selectores reutilizables) -->
+    <!-- Modal Registrar Nuevo Gasto (Con selectores reutilizables + Tasa BCV / Manual) -->
     <div id="modalGasto" class="modal-overlay">
         <div class="modal-caja" style="border-top: 5px solid #ef4444;">
             <h2 style="margin-bottom: 1rem; color: var(--texto-principal);">💸 Registrar Nuevo Gasto</h2>
@@ -1280,7 +1374,7 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
                 </div>
                 <div style="margin-bottom: 0.9rem;">
                     <label style="display:block; margin-bottom: 0.4rem; font-weight: bold; font-size: 0.9rem;">¿De dónde salió el dinero?</label>
-                    <select name="metodo_pago" required style="width: 100%; padding: 0.75rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;">
+                    <select name="metodo_pago" id="nuevo_metodo" onchange="toggleTasaGasto('nuevo')" required style="width: 100%; padding: 0.75rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;">
                         <option value="efectivo_usd">💵 Efectivo USD (En Dólares)</option>
                         <option value="efectivo_bs">💵 Efectivo BS (En Bolívares)</option>
                         <option value="pago_movil">📱 Pago Móvil (En Bolívares)</option>
@@ -1289,9 +1383,25 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
                         <option value="otro">💳 Otros (En Dólares)</option>
                     </select>
                 </div>
+
+                <!-- Bloque de Tasa para Gastos en Bolívares -->
+                <div id="nuevo_caja_tasa" class="caja-tasa-gasto">
+                    <label>💱 Tasa para calcular este gasto en Bs</label>
+                    <select name="tipo_tasa" id="nuevo_tipo_tasa" onchange="cambiarTipoTasaGasto('nuevo')" style="width: 100%; padding: 0.6rem; border: 1px solid #93c5fd; border-radius: 5px; background: white; margin-bottom: 0.5rem;">
+                        <option value="bcv">🏛️ Tasa BCV del negocio (<?php echo number_format($tasa_actual, 2, ',', '.'); ?> Bs)</option>
+                        <option value="manual">✏️ Colocar tasa manual</option>
+                    </select>
+                    <div id="nuevo_div_tasa_manual" style="display: none;">
+                        <input type="number" step="0.01" min="0.01" name="tasa_aplicada" id="nuevo_tasa_aplicada" value="<?php echo number_format($tasa_actual, 2, '.', ''); ?>" oninput="actualizarPreviewGasto('nuevo')" placeholder="Ej: <?php echo number_format($tasa_actual, 2, '.', ''); ?>" style="width: 100%; padding: 0.6rem; border: 1px solid #3b82f6; border-radius: 5px; box-sizing: border-box; font-weight: bold;">
+                    </div>
+                    <div id="nuevo_preview_usd" style="margin-top: 0.45rem; font-size: 0.85rem; color: #1e40af; font-weight: bold;">
+                        Equivalente: $0.00
+                    </div>
+                </div>
+
                 <div style="margin-bottom: 1.5rem;">
                     <label style="display:block; margin-bottom: 0.4rem; font-weight: bold; font-size: 0.9rem;">Monto a descontar</label>
-                    <input type="number" step="0.01" name="monto" required style="width: 100%; padding: 0.75rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;" placeholder="Monto crudo en su moneda">
+                    <input type="number" step="0.01" name="monto" id="nuevo_monto" oninput="actualizarPreviewGasto('nuevo')" required style="width: 100%; padding: 0.75rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;" placeholder="Monto crudo en su moneda">
                 </div>
                 <div style="display: flex; gap: 1rem; justify-content: flex-end;">
                     <button type="button" onclick="document.getElementById('modalGasto').style.display='none'" style="padding: 0.8rem 1.5rem; border: none; border-radius: 5px; background: #e2e8f0; color: #475569; cursor: pointer; font-weight: bold;">Cancelar</button>
@@ -1334,7 +1444,7 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
                 </div>
                 <div style="margin-bottom: 0.9rem;">
                     <label style="display:block; margin-bottom: 0.4rem; font-weight: bold; font-size: 0.9rem;">¿De dónde salió el dinero?</label>
-                    <select name="metodo_pago" id="edit_metodo" required style="width: 100%; padding: 0.75rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;">
+                    <select name="metodo_pago" id="edit_metodo" onchange="toggleTasaGasto('edit')" required style="width: 100%; padding: 0.75rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;">
                         <option value="efectivo_usd">💵 Efectivo USD (En Dólares)</option>
                         <option value="efectivo_bs">💵 Efectivo BS (En Bolívares)</option>
                         <option value="pago_movil">📱 Pago Móvil (En Bolívares)</option>
@@ -1343,9 +1453,25 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
                         <option value="otro">💳 Otros (En Dólares)</option>
                     </select>
                 </div>
+
+                <!-- Bloque de Tasa para Editar Gasto en Bolívares -->
+                <div id="edit_caja_tasa" class="caja-tasa-gasto">
+                    <label>💱 Tasa para calcular este gasto en Bs</label>
+                    <select name="tipo_tasa" id="edit_tipo_tasa" onchange="cambiarTipoTasaGasto('edit')" style="width: 100%; padding: 0.6rem; border: 1px solid #93c5fd; border-radius: 5px; background: white; margin-bottom: 0.5rem;">
+                        <option value="bcv">🏛️ Tasa BCV del negocio (<?php echo number_format($tasa_actual, 2, ',', '.'); ?> Bs)</option>
+                        <option value="manual">✏️ Colocar tasa manual</option>
+                    </select>
+                    <div id="edit_div_tasa_manual" style="display: none;">
+                        <input type="number" step="0.01" min="0.01" name="tasa_aplicada" id="edit_tasa_aplicada" value="<?php echo number_format($tasa_actual, 2, '.', ''); ?>" oninput="actualizarPreviewGasto('edit')" placeholder="Ej: <?php echo number_format($tasa_actual, 2, '.', ''); ?>" style="width: 100%; padding: 0.6rem; border: 1px solid #3b82f6; border-radius: 5px; box-sizing: border-box; font-weight: bold;">
+                    </div>
+                    <div id="edit_preview_usd" style="margin-top: 0.45rem; font-size: 0.85rem; color: #1e40af; font-weight: bold;">
+                        Equivalente: $0.00
+                    </div>
+                </div>
+
                 <div style="margin-bottom: 1.5rem;">
                     <label style="display:block; margin-bottom: 0.4rem; font-weight: bold; font-size: 0.9rem;">Monto Corregido</label>
-                    <input type="number" step="0.01" name="monto" id="edit_monto" required style="width: 100%; padding: 0.75rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;">
+                    <input type="number" step="0.01" name="monto" id="edit_monto" oninput="actualizarPreviewGasto('edit')" required style="width: 100%; padding: 0.75rem; border: 1px solid var(--borde); border-radius: 5px; box-sizing: border-box;">
                 </div>
                 <div style="display: flex; gap: 1rem; justify-content: flex-end;">
                     <button type="button" onclick="document.getElementById('modalEditarGasto').style.display='none'" style="padding: 0.8rem 1.5rem; border: none; border-radius: 5px; background: #e2e8f0; color: #475569; cursor: pointer; font-weight: bold;">Cancelar</button>
@@ -1356,9 +1482,11 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
     </div>
     <?php endif; ?>
 
-    <!-- TICKET DE IMPRESIÓN ACTUALIZADO -->
+    <!-- ==========================================
+         TICKET DE IMPRESIÓN 1: CUADRE TÉRMICO 80MM
+         ========================================== -->
     <div id="ticket-print">
-        <h2>Lia POS</h2>
+        <h2><?php echo htmlspecialchars($nombre_negocio); ?></h2>
         <h3>REPORTE DE CAJA</h3>
         <p class="ticket-text-center">Impresión: <?php echo date('d/m/Y h:i A'); ?></p>
         <p class="ticket-text-center">Desde: <?php echo date('d/m/y', strtotime($filtro_inicio)) . ' ' . $hora_inicio; ?></p>
@@ -1452,9 +1580,246 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
         </div>
     </div>
 
+    <!-- ==========================================
+         REPORTE DE IMPRESIÓN 2: LISTADO DE TRANSACCIONES (HOJA CARTA)
+         ========================================== -->
+    <div id="reporte-transacciones-print">
+        <div class="rep-header">
+            <h2><?php echo htmlspecialchars($nombre_negocio); ?></h2>
+            <p><strong>REPORTE DETALLADO DE TRANSACCIONES Y RESULTADOS</strong></p>
+            <p>Generado el: <?php echo date('d/m/Y h:i A'); ?> | Tasa BCV del Negocio: <?php echo number_format($tasa_actual, 2, ',', '.'); ?> Bs</p>
+        </div>
+
+        <div class="rep-meta">
+            <div><strong>Desde:</strong> <?php echo date('d/m/Y', strtotime($filtro_inicio)) . ' ' . $hora_inicio; ?></div>
+            <div><strong>Hasta:</strong> <?php echo date('d/m/Y', strtotime($filtro_fin)) . ' ' . $hora_fin; ?></div>
+            <div><strong>Vendedor:</strong> <?php echo htmlspecialchars($nombre_vendedor_filtro); ?></div>
+            <div><strong>Total Registros:</strong> <?php echo count($movimientos); ?></div>
+        </div>
+
+        <table class="rep-tabla">
+            <thead>
+                <tr>
+                    <th style="width: 10%;">Ref / Tipo</th>
+                    <th style="width: 14%;">Fecha / Hora</th>
+                    <th style="width: 13%;">Usuario</th>
+                    <th style="width: 31%;">Detalle del Registro</th>
+                    <th style="width: 17%;">Método / Tasa</th>
+                    <th style="width: 15%; text-align: right;">Monto</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if (!empty($movimientos)): ?>
+                    <?php foreach ($movimientos as $mov):
+                        $es_abono = ($mov['tipo_registro'] == 'abono');
+                        $es_gasto = ($mov['tipo_registro'] == 'gasto');
+                        $es_ingreso = ($mov['tipo_registro'] == 'ingreso_caja');
+                        $metodo_limpio = strtolower($mov['metodo_pago']);
+                        $es_moneda_bs = (strpos($metodo_limpio, 'bs') !== false || strpos($metodo_limpio, 'movil') !== false || strpos($metodo_limpio, 'biopago') !== false || strpos($metodo_limpio, 'punto') !== false);
+
+                        if ($es_gasto || $es_ingreso) {
+                            $ingreso_usd = $mov['monto_usd_calc']; $ingreso_bs = $mov['monto_bs_calc'];
+                        } elseif ($es_abono) {
+                            $ingreso_usd = $mov['abono_usd']; $ingreso_bs = $mov['abono_bs'];
+                        } else {
+                            $tasa = floatval($mov['tasa_aplicada'] > 0 ? $mov['tasa_aplicada'] : $tasa_actual);
+                            if (strpos($metodo_limpio, 'credito_') === 0) {
+                                $ingreso_usd = $mov['abono_usd']; $ingreso_bs = $mov['abono_usd'] * $tasa;
+                            } elseif ($metodo_limpio == 'credito') {
+                                $ingreso_usd = 0; $ingreso_bs = 0;
+                            } else {
+                                $ingreso_usd = $mov['total_usd']; $ingreso_bs = $mov['total_bs'];
+                            }
+                        }
+                    ?>
+                        <tr>
+                            <td>
+                                <?php
+                                if ($es_gasto) echo "<strong>GASTO</strong>";
+                                elseif ($es_ingreso) echo "<strong>FONDO</strong>";
+                                elseif ($es_abono) echo ($metodo_limpio == 'descuento') ? "<strong>DESCUENTO</strong>" : "<strong>ABONO</strong>";
+                                else echo "<strong>#" . str_pad($mov['ticket_id'], 5, "0", STR_PAD_LEFT) . "</strong>";
+                                ?>
+                            </td>
+                            <td><?php echo date('d/m/Y h:i A', strtotime($mov['fecha'])); ?></td>
+                            <td><?php echo htmlspecialchars($mov['vendedor']); ?></td>
+                            <td>
+                                <?php if ($es_gasto): ?>
+                                    <strong>[<?php echo htmlspecialchars($mov['categoria'] ?? 'General'); ?>]</strong>
+                                    <?php if (!empty($mov['subcategoria'])) echo ' ' . htmlspecialchars($mov['subcategoria']); ?>
+                                    <?php if (!empty($mov['descripcion']) && $mov['descripcion'] !== ($mov['subcategoria'] ?? '')) echo '<br>' . htmlspecialchars($mov['descripcion']); ?>
+                                <?php elseif ($es_ingreso): ?>
+                                    <?php echo htmlspecialchars($mov['descripcion']); ?>
+                                <?php else: ?>
+                                    <?php echo strip_tags($mov['detalle_productos'], '<br><strong>'); ?>
+                                <?php endif; ?>
+                            </td>
+                            <td>
+                                <?php
+                                echo strtoupper(str_replace('_', ' ', $mov['metodo_pago']));
+                                if (!empty($mov['referencia'])) echo '<br>Ref: ' . htmlspecialchars($mov['referencia']);
+                                if ($es_gasto && $es_moneda_bs && !empty($mov['tasa_usada_calc'])) {
+                                    echo '<br>Tasa: ' . number_format($mov['tasa_usada_calc'], 2, ',', '.') . ' Bs';
+                                }
+                                ?>
+                            </td>
+                            <td class="num">
+                                <?php if ($es_gasto): ?>
+                                    <strong>- $<?php echo number_format($ingreso_usd, 2); ?></strong><br>
+                                    - <?php echo number_format($ingreso_bs, 2, ',', '.'); ?> Bs
+                                <?php elseif ($es_ingreso): ?>
+                                    <strong>+ $<?php echo number_format($ingreso_usd, 2); ?></strong><br>
+                                    + <?php echo number_format($ingreso_bs, 2, ',', '.'); ?> Bs
+                                <?php elseif ($es_abono && $metodo_limpio == 'descuento'): ?>
+                                    <strong>$<?php echo number_format($ingreso_usd, 2); ?></strong><br>
+                                    (Descuento)
+                                <?php elseif ($ingreso_usd == 0 && $ingreso_bs == 0): ?>
+                                    <strong>$0.00</strong><br>
+                                    (Crédito)
+                                <?php else: ?>
+                                    <strong>+ $<?php echo number_format($ingreso_usd, 2); ?></strong><br>
+                                    + <?php echo number_format($ingreso_bs, 2, ',', '.'); ?> Bs
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php else: ?>
+                    <tr><td colspan="6" style="text-align: center; padding: 12px;">No hay transacciones en el período seleccionado.</td></tr>
+                <?php endif; ?>
+            </tbody>
+        </table>
+
+        <div class="rep-resumen-grid">
+            <div class="rep-box">
+                <h4>Resumen de Operaciones</h4>
+                <div class="rep-linea"><span>Fondo de Caja (Inicio):</span><span>+$<?php echo number_format($total_ingresos_extra_usd, 2); ?> (<?php echo number_format($total_ingresos_extra_bs, 2, ',', '.'); ?> Bs)</span></div>
+                <div class="rep-linea"><span>Ventas de Contado:</span><span>$<?php echo number_format($t_ventas_usd, 2); ?> (<?php echo number_format($t_ventas_bs, 2, ',', '.'); ?> Bs)</span></div>
+                <div class="rep-linea"><span>Abonos a Créditos:</span><span>$<?php echo number_format($t_abonos_usd, 2); ?> (<?php echo number_format($t_abonos_bs, 2, ',', '.'); ?> Bs)</span></div>
+                <div class="rep-linea"><span>Total Gastos:</span><span>-$<?php echo number_format($total_gastos_usd, 2); ?> (-<?php echo number_format($total_gastos_bs, 2, ',', '.'); ?> Bs)</span></div>
+                <div class="rep-linea total"><span>Ganancia Neta Estimada:</span><span>$<?php echo number_format($ganancia_neta_usd, 2); ?> (<?php echo number_format($ganancia_neta_bs, 2, ',', '.'); ?> Bs)</span></div>
+            </div>
+
+            <div class="rep-box">
+                <h4>Resultados Netos en Caja</h4>
+                <?php foreach($caja as $key => $datos): ?>
+                    <?php if($datos['usd'] != 0 || $datos['bs'] != 0): ?>
+                        <div class="rep-linea">
+                            <span><?php echo trim(preg_replace('/[^\p{L}\p{N}\s\/]/u', '', $datos['nombre'])); ?>:</span>
+                            <span>
+                                <?php if($datos['tipo'] == 'bs'): ?>
+                                    <?php echo number_format($datos['bs'], 2, ',', '.'); ?> Bs (Ref: $<?php echo number_format($datos['usd'], 2); ?>)
+                                <?php else: ?>
+                                    $<?php echo number_format($datos['usd'], 2); ?> (<?php echo number_format($datos['bs'], 2, ',', '.'); ?> Bs)
+                                <?php endif; ?>
+                            </span>
+                        </div>
+                    <?php endif; ?>
+                <?php endforeach; ?>
+                <div class="rep-linea total"><span>TOTAL BOLÍVARES EN CAJA:</span><span><?php echo number_format($suma_total_bolivares, 2, ',', '.'); ?> Bs</span></div>
+                <div class="rep-linea total"><span>TOTAL DÓLARES EN CAJA:</span><span>$<?php echo number_format($suma_total_dolares, 2); ?></span></div>
+                <?php if($suma_total_trueques != 0): ?>
+                    <div class="rep-linea"><span>Total Trueques (Especie):</span><span>$<?php echo number_format($suma_total_trueques, 2); ?></span></div>
+                <?php endif; ?>
+            </div>
+        </div>
+
+        <div class="rep-firmas">
+            <div>Firma Responsable / Cajero</div>
+            <div>Firma Administración / Gerencia</div>
+        </div>
+    </div>
+
     <script>
         const mapaConceptosGastos = <?php echo json_encode($mapa_conceptos, JSON_UNESCAPED_UNICODE); ?>;
+        const tasaBcvNegocio = <?php echo json_encode(floatval($tasa_actual)); ?>;
 
+        // ==========================================
+        // CONTROL DE IMPRESIÓN (CUADRE 80MM vs TRANSACCIONES CARTA)
+        // ==========================================
+        function imprimirCuadre() {
+            const stylePage = document.getElementById('estilo-pagina-print');
+            if (stylePage) stylePage.innerHTML = '@page { margin: 0mm; size: 80mm 297mm; }';
+            document.body.classList.remove('print-transacciones');
+            document.body.classList.add('print-cuadre');
+            window.print();
+        }
+
+        function imprimirTransacciones() {
+            const stylePage = document.getElementById('estilo-pagina-print');
+            if (stylePage) stylePage.innerHTML = '@page { margin: 10mm; size: letter portrait; }';
+            document.body.classList.remove('print-cuadre');
+            document.body.classList.add('print-transacciones');
+            window.print();
+        }
+
+        window.onafterprint = function() {
+            document.body.classList.remove('print-transacciones');
+            document.body.classList.remove('print-cuadre');
+        };
+
+        // ==========================================
+        // CONTROL DE TASA BCV / MANUAL EN GASTOS EN BS
+        // ==========================================
+        function esMetodoBolivares(metodo) {
+            const m = (metodo || '').toLowerCase();
+            return m.includes('bs') || m.includes('movil') || m.includes('biopago') || m.includes('punto');
+        }
+
+        function toggleTasaGasto(prefijo) {
+            const selMetodo = document.getElementById(prefijo + '_metodo');
+            const cajaTasa = document.getElementById(prefijo + '_caja_tasa');
+            if (!selMetodo || !cajaTasa) return;
+
+            if (esMetodoBolivares(selMetodo.value)) {
+                cajaTasa.style.display = 'block';
+                cambiarTipoTasaGasto(prefijo);
+            } else {
+                cajaTasa.style.display = 'none';
+            }
+        }
+
+        function cambiarTipoTasaGasto(prefijo) {
+            const selTipo = document.getElementById(prefijo + '_tipo_tasa');
+            const divManual = document.getElementById(prefijo + '_div_tasa_manual');
+            const inpTasa = document.getElementById(prefijo + '_tasa_aplicada');
+            if (!selTipo || !divManual || !inpTasa) return;
+
+            if (selTipo.value === 'manual') {
+                divManual.style.display = 'block';
+                inpTasa.required = true;
+            } else {
+                divManual.style.display = 'none';
+                inpTasa.required = false;
+                inpTasa.value = tasaBcvNegocio.toFixed(2);
+            }
+            actualizarPreviewGasto(prefijo);
+        }
+
+        function actualizarPreviewGasto(prefijo) {
+            const selMetodo = document.getElementById(prefijo + '_metodo');
+            const selTipo = document.getElementById(prefijo + '_tipo_tasa');
+            const inpTasa = document.getElementById(prefijo + '_tasa_aplicada');
+            const inpMonto = document.getElementById(prefijo + '_monto');
+            const lblPreview = document.getElementById(prefijo + '_preview_usd');
+
+            if (!selMetodo || !lblPreview || !esMetodoBolivares(selMetodo.value)) return;
+
+            const monto = parseFloat(inpMonto ? inpMonto.value : 0) || 0;
+            const tasa = (selTipo && selTipo.value === 'manual')
+                ? (parseFloat(inpTasa ? inpTasa.value : 0) || 0)
+                : tasaBcvNegocio;
+
+            if (monto > 0 && tasa > 0) {
+                const usd = monto / tasa;
+                lblPreview.innerText = 'Equivalente: $' + usd.toFixed(2) + ' (Tasa: ' + tasa.toLocaleString('es-VE', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' Bs)';
+            } else {
+                lblPreview.innerText = 'Equivalente: $0.00';
+            }
+        }
+
+        // ==========================================
+        // SELECTORES DE CATEGORÍAS Y CONCEPTOS DE GASTOS
+        // ==========================================
         function actualizarSelectConceptos(prefijo, valorPreseleccionado = '') {
             const selCat = document.getElementById(prefijo + '_gasto_cat');
             const inpCatNueva = document.getElementById(prefijo + '_gasto_cat_nueva');
@@ -1521,6 +1886,10 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
 
         function abrirModalNuevoGasto() {
             actualizarSelectConceptos('nuevo');
+            document.getElementById('nuevo_tipo_tasa').value = 'bcv';
+            document.getElementById('nuevo_tasa_aplicada').value = tasaBcvNegocio.toFixed(2);
+            document.getElementById('nuevo_monto').value = '';
+            toggleTasaGasto('nuevo');
             document.getElementById('modalGasto').style.display = 'flex';
         }
 
@@ -1538,6 +1907,18 @@ $vendedores = $conexion->query("SELECT id, nombre FROM usuarios WHERE rol IN ('a
             document.getElementById('edit_descripcion').value = datos.descripcion || '';
             document.getElementById('edit_monto').value = datos.monto;
             document.getElementById('edit_metodo').value = datos.metodo_pago;
+
+            const tasaGuardada = parseFloat(datos.tasa_aplicada || datos.tasa_usada_calc || tasaBcvNegocio);
+            if (Math.abs(tasaGuardada - tasaBcvNegocio) > 0.01) {
+                document.getElementById('edit_tipo_tasa').value = 'manual';
+                document.getElementById('edit_tasa_aplicada').value = tasaGuardada.toFixed(2);
+            } else {
+                document.getElementById('edit_tipo_tasa').value = 'bcv';
+                document.getElementById('edit_tasa_aplicada').value = tasaBcvNegocio.toFixed(2);
+            }
+            toggleTasaGasto('edit');
+            actualizarPreviewGasto('edit');
+
             document.getElementById('modalEditarGasto').style.display = 'flex';
         }
 
